@@ -178,10 +178,17 @@ IGGY 메시징 시스템의 TCP 프로토콜을 분석하기 위한 Wireshark Cu
 
 **오후: 핵심 구현 완료**
 - protocol-spec.md 작성 완료 (상세 프로토콜 스펙)
-- iggy.lua 기본 구현 완료 (~820 라인)
+- iggy.lua 기본 구현 완료 (980 라인)
 - 25+ 커맨드 파서 구현
 - README.md 작성 (설치 가이드, 사용법, 필터 예제)
 - TCP 재조립 및 Heuristic dissector 구현
+
+**저녁: macOS 지원 개선**
+- README.md macOS 설치 가이드 대폭 개선
+- 자동 설치 스크립트 작성 (install.sh)
+- test/README.md macOS 정보 추가
+- loopback 인터페이스 차이점 명확히 문서화 (lo0 vs lo)
+- macOS Wireshark 4.6.0 테스트 및 검증
 
 **구현된 주요 기능:**
 - Request/Response 자동 구분

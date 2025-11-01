@@ -34,6 +34,15 @@ The best way to test is with real IGGY traffic:
    ```
 
 2. **Start packet capture:**
+
+   **macOS:**
+   ```bash
+   # In another terminal
+   sudo tcpdump -i lo0 -w iggy_real.pcap 'tcp port 8090'
+   # Note: macOS uses lo0, not lo!
+   ```
+
+   **Linux:**
    ```bash
    # In another terminal
    sudo tcpdump -i lo -w iggy_real.pcap 'tcp port 8090'
@@ -64,9 +73,16 @@ The best way to test is with real IGGY traffic:
    ./target/release/iggy-cli logout
    ```
 
-4. **Stop tcpdump** (Ctrl+C)
+4. **Stop tcpdump** (Ctrl+C in Terminal 2)
 
 5. **Open in Wireshark:**
+
+   **macOS:**
+   ```bash
+   open -a Wireshark iggy_real.pcap
+   ```
+
+   **Linux:**
    ```bash
    wireshark iggy_real.pcap
    ```
@@ -212,31 +228,56 @@ IGGY Protocol (Request)
 ### No traffic captured
 
 - Make sure tcpdump has proper permissions (use sudo)
-- Verify the network interface is correct (lo for localhost)
+- Verify the network interface is correct:
+  - **macOS**: `lo0` (NOT `lo`)
+  - **Linux**: `lo`
 - Check firewall settings
 
 ## Sample Commands for Testing
 
 Here's a complete test sequence:
 
+**Terminal 1: Start IGGY server**
 ```bash
-# Terminal 1: Start IGGY server
 iggy-server
+```
 
-# Terminal 2: Start capture
+**Terminal 2: Start capture**
+
+macOS:
+```bash
+sudo tcpdump -i lo0 -w test.pcap 'tcp port 8090'
+```
+
+Linux:
+```bash
 sudo tcpdump -i lo -w test.pcap 'tcp port 8090'
+```
 
-# Terminal 3: Run commands
+**Terminal 3: Run commands**
+```bash
 iggy-cli login root secret
 iggy-cli stream create 1 mystream
 iggy-cli topic create 1 1 3 mytopic
 iggy-cli message send 1 1 "Hello World"
 iggy-cli message poll 1 1 consumer 1
 iggy-cli logout
+```
 
-# Terminal 2: Stop capture (Ctrl+C)
+**Terminal 2: Stop capture**
+```
+Press Ctrl+C
+```
 
-# Open Wireshark
+**Open Wireshark**
+
+macOS:
+```bash
+open -a Wireshark test.pcap
+```
+
+Linux:
+```bash
 wireshark test.pcap
 ```
 

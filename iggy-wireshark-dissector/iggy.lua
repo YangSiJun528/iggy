@@ -974,7 +974,6 @@ iggy_proto:register_heuristic("tcp", function(buffer, pinfo, tree)
     return false
 end)
 
--- Display info
-info("IGGY Protocol Dissector loaded successfully")
-info("Registered on TCP ports: 8090, 8091, 8092")
-info("Heuristic dissector enabled")
+-- Dissector loaded successfully
+-- Registered on TCP ports: 8090, 8091, 8092
+-- Heuristic dissector enabled

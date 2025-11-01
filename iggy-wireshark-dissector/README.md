@@ -29,54 +29,144 @@ See [protocol-spec.md](protocol-spec.md) for detailed protocol documentation.
 
 ### Prerequisites
 
-- Wireshark 3.0 or later
+- Wireshark 3.0 or later (Tested on Wireshark 4.6.0)
 - IGGY server (for testing)
 
-### Method 1: User Plugin Directory (Recommended)
+### Quick Install
 
-1. Locate your Wireshark personal plugins directory:
-   - **Linux/macOS**: `~/.local/lib/wireshark/plugins/` or `~/.wireshark/plugins/`
-   - **Windows**: `%APPDATA%\Wireshark\plugins\`
+**macOS (Recommended):**
+```bash
+# Automatic installation
+./install.sh
+
+# Or manual installation
+mkdir -p ~/.local/lib/wireshark/plugins/
+cp iggy.lua ~/.local/lib/wireshark/plugins/
+```
+
+**Linux:**
+```bash
+mkdir -p ~/.local/lib/wireshark/plugins/
+cp iggy.lua ~/.local/lib/wireshark/plugins/
+```
+
+**Windows:**
+```powershell
+# Create directory if not exists
+New-Item -ItemType Directory -Force -Path "$env:APPDATA\Wireshark\plugins"
+Copy-Item iggy.lua "$env:APPDATA\Wireshark\plugins\"
+```
+
+Then restart Wireshark or reload plugins with: `Analyze` → `Reload Lua Plugins` (Cmd+Shift+L on macOS, Ctrl+Shift+L on others)
+
+### Detailed Installation
+
+#### Method 1: User Plugin Directory (Recommended)
+
+**Advantages:** No admin rights needed, easy to update, user-specific
+
+1. **Locate your Wireshark personal plugins directory:**
 
    You can find the exact path in Wireshark: `Help` → `About Wireshark` → `Folders` → `Personal Plugins`
 
-2. Copy `iggy.lua` to the plugins directory:
+   Common locations:
+   - **macOS**: `~/.local/lib/wireshark/plugins/`
+   - **Linux**: `~/.local/lib/wireshark/plugins/` or `~/.config/wireshark/plugins/`
+   - **Windows**: `%APPDATA%\Wireshark\plugins\`
+
+2. **Install the dissector:**
+
+   **macOS:**
    ```bash
-   # Linux/macOS
+   # Navigate to the project directory
+   cd iggy-wireshark-dissector
+
+   # Create plugins directory
+   mkdir -p ~/.local/lib/wireshark/plugins/
+
+   # Copy the dissector
+   cp iggy.lua ~/.local/lib/wireshark/plugins/
+
+   # Verify installation
+   ls -lh ~/.local/lib/wireshark/plugins/iggy.lua
+   ```
+
+   **Linux:**
+   ```bash
+   # Try the standard location first
    mkdir -p ~/.local/lib/wireshark/plugins/
    cp iggy.lua ~/.local/lib/wireshark/plugins/
 
-   # Or use the legacy location
-   mkdir -p ~/.wireshark/plugins/
-   cp iggy.lua ~/.wireshark/plugins/
+   # If that doesn't work, try the config location
+   mkdir -p ~/.config/wireshark/plugins/
+   cp iggy.lua ~/.config/wireshark/plugins/
    ```
 
-3. Restart Wireshark or reload Lua plugins: `Analyze` → `Reload Lua Plugins` (Ctrl+Shift+L)
+   **Windows (PowerShell):**
+   ```powershell
+   New-Item -ItemType Directory -Force -Path "$env:APPDATA\Wireshark\plugins"
+   Copy-Item iggy.lua "$env:APPDATA\Wireshark\plugins\"
+   ```
 
-### Method 2: Global Plugin Directory
+3. **Reload Wireshark plugins:**
+   - Restart Wireshark, or
+   - `Analyze` → `Reload Lua Plugins` (Cmd+Shift+L on macOS, Ctrl+Shift+L on others)
 
-1. Find the global plugins directory:
-   - **Linux**: `/usr/lib/wireshark/plugins/`
+#### Method 2: Global Plugin Directory
+
+**Advantages:** Available for all users
+**Disadvantages:** Requires admin/sudo, harder to update
+
+1. **Find the global plugins directory:**
    - **macOS**: `/Applications/Wireshark.app/Contents/PlugIns/wireshark/`
+   - **Linux**: `/usr/lib/wireshark/plugins/` or `/usr/local/lib/wireshark/plugins/`
    - **Windows**: `C:\Program Files\Wireshark\plugins\`
 
-2. Copy `iggy.lua` to the global directory (requires admin/sudo):
-   ```bash
-   # Linux
-   sudo cp iggy.lua /usr/lib/wireshark/plugins/
+2. **Copy with admin privileges:**
 
-   # macOS
+   **macOS:**
+   ```bash
    sudo cp iggy.lua /Applications/Wireshark.app/Contents/PlugIns/wireshark/
    ```
 
-3. Restart Wireshark
+   **Linux:**
+   ```bash
+   sudo cp iggy.lua /usr/lib/wireshark/plugins/
+   # or
+   sudo cp iggy.lua /usr/local/lib/wireshark/plugins/
+   ```
+
+   **Windows (Run as Administrator):**
+   ```powershell
+   Copy-Item iggy.lua "C:\Program Files\Wireshark\plugins\"
+   ```
+
+3. **Restart Wireshark**
 
 ### Verify Installation
 
-1. Open Wireshark
-2. Go to `Analyze` → `Enabled Protocols`
-3. Search for "IGGY"
-4. Verify that "IGGY Messaging Protocol" is listed and enabled
+1. **Open Wireshark**
+   ```bash
+   # macOS
+   open /Applications/Wireshark.app
+
+   # Linux
+   wireshark
+
+   # Windows
+   # Use Start Menu or desktop shortcut
+   ```
+
+2. **Check in About dialog:**
+   - Go to `Help` → `About Wireshark`
+   - Click on `Plugins` tab
+   - Search for "iggy"
+   - You should see `iggy.lua` listed
+
+3. **Check in Enabled Protocols:**
+   - Go to `Analyze` → `Enabled Protocols`
+   - Search for "IGGY"
+   - Verify that "IGGY Messaging Protocol" is listed and enabled
 
 You should also see this message in Wireshark's log:
 ```
@@ -89,13 +179,96 @@ Heuristic dissector enabled
 
 ### Capturing IGGY Traffic
 
-1. Start capturing on the network interface where IGGY traffic flows
-2. Apply a capture filter (optional):
+#### Using Wireshark GUI
+
+1. **Start Wireshark**
+
+2. **Select the appropriate network interface:**
+   - **macOS localhost**: `Loopback: lo0` (for local IGGY server)
+   - **Linux localhost**: `Loopback: lo`
+   - **Network traffic**: Select your ethernet/wifi interface
+
+3. **Apply a capture filter (optional but recommended):**
    ```
    tcp port 8090
    ```
+   This will only capture IGGY traffic and reduce noise.
 
-3. The dissector will automatically detect IGGY protocol packets
+4. **Start capture** - The dissector will automatically detect IGGY protocol packets
+
+#### Using Command Line (tcpdump)
+
+**macOS:**
+```bash
+# Capture localhost traffic
+sudo tcpdump -i lo0 -w iggy_capture.pcap 'tcp port 8090'
+
+# Note: macOS uses lo0, not lo!
+```
+
+**Linux:**
+```bash
+# Capture localhost traffic
+sudo tcpdump -i lo -w iggy_capture.pcap 'tcp port 8090'
+```
+
+**Then open in Wireshark:**
+```bash
+# macOS
+open -a Wireshark iggy_capture.pcap
+
+# Linux
+wireshark iggy_capture.pcap
+```
+
+#### Complete Example: Capture Real IGGY Traffic
+
+**Terminal 1 - Start IGGY Server:**
+```bash
+iggy-server
+# Server will listen on tcp://127.0.0.1:8090
+```
+
+**Terminal 2 - Start Packet Capture:**
+```bash
+# macOS
+sudo tcpdump -i lo0 -w ~/Desktop/iggy_test.pcap 'tcp port 8090'
+
+# Linux
+sudo tcpdump -i lo -w ~/Desktop/iggy_test.pcap 'tcp port 8090'
+```
+
+**Terminal 3 - Generate IGGY Traffic:**
+```bash
+# Login
+iggy-cli login root secret
+
+# Create resources
+iggy-cli stream create 1 test_stream
+iggy-cli topic create 1 1 3 test_topic
+
+# Send and receive messages
+iggy-cli message send 1 1 "Hello Wireshark!"
+iggy-cli message poll 1 1 consumer 1
+
+# Cleanup
+iggy-cli stream delete 1
+iggy-cli logout
+```
+
+**Terminal 2 - Stop capture:**
+```
+Press Ctrl+C
+```
+
+**Open in Wireshark:**
+```bash
+# macOS
+open -a Wireshark ~/Desktop/iggy_test.pcap
+
+# Linux
+wireshark ~/Desktop/iggy_test.pcap
+```
 
 ### Display Filters
 
