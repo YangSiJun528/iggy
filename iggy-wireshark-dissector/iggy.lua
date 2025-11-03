@@ -483,7 +483,13 @@ command_parsers[200] = function(buffer, pinfo, tree, offset)
     return consumed
 end
 
--- GET_STREAMS (201) / GET_STREAMS (201) - No payload
+-- GET_STATS (10) - No payload
+command_parsers[10] = function(buffer, pinfo, tree, offset)
+    tree:add(iggy_proto, buffer(offset, 0), "GET_STATS: No payload")
+    return 0
+end
+
+-- GET_STREAMS (201) - No payload
 command_parsers[201] = function(buffer, pinfo, tree, offset)
     tree:add(iggy_proto, buffer(offset, 0), "GET_STREAMS: No payload")
     return 0
@@ -685,6 +691,182 @@ command_parsers[32] = function(buffer, pinfo, tree, offset)
     return 0
 end
 
+-- CREATE_USER (33)
+command_parsers[33] = function(buffer, pinfo, tree, offset)
+    local start_offset = offset
+
+    -- Username
+    local consumed = parse_string_u8(buffer, offset, tree, f.username, "Username")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Password
+    consumed = parse_string_u8(buffer, offset, tree, f.password, "Password")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Status
+    if buffer:len() < offset + 1 then return -1 end
+    local status = buffer(offset, 1):le_uint()
+    tree:add_le(iggy_proto, buffer(offset, 1), "User Status: " .. status .. (status == 1 and " (Active)" or " (Inactive)"))
+    offset = offset + 1
+
+    -- Has Permissions flag
+    if buffer:len() < offset + 1 then return -1 end
+    local has_permissions = buffer(offset, 1):le_uint()
+    tree:add_le(iggy_proto, buffer(offset, 1), "Has Permissions: " .. (has_permissions == 1 and "Yes" or "No"))
+    offset = offset + 1
+
+    -- Permissions (if present)
+    if has_permissions == 1 then
+        if buffer:len() < offset + 4 then return -1 end
+        local perm_length = buffer(offset, 4):le_uint()
+        tree:add_le(iggy_proto, buffer(offset, 4), "Permissions Length: " .. perm_length)
+        offset = offset + 4
+
+        if buffer:len() < offset + perm_length then return -1 end
+        tree:add(iggy_proto, buffer(offset, perm_length), "Permissions Data (" .. perm_length .. " bytes)")
+        offset = offset + perm_length
+    end
+
+    return offset - start_offset
+end
+
+-- DELETE_USER (34)
+command_parsers[34] = function(buffer, pinfo, tree, offset)
+    local consumed = parse_identifier(buffer, offset, tree, "User ID")
+    if consumed == 0 then return -1 end
+    return consumed
+end
+
+-- UPDATE_USER (35)
+command_parsers[35] = function(buffer, pinfo, tree, offset)
+    local start_offset = offset
+
+    -- User identifier
+    local consumed = parse_identifier(buffer, offset, tree, "User ID")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Has Username flag
+    if buffer:len() < offset + 1 then return -1 end
+    local has_username = buffer(offset, 1):le_uint()
+    tree:add_le(iggy_proto, buffer(offset, 1), "Has Username: " .. (has_username == 1 and "Yes" or "No"))
+    offset = offset + 1
+
+    -- Username (if present)
+    if has_username == 1 then
+        consumed = parse_string_u8(buffer, offset, tree, f.username, "New Username")
+        if consumed == 0 then return -1 end
+        offset = offset + consumed
+    end
+
+    -- Has Status flag
+    if buffer:len() < offset + 1 then return -1 end
+    local has_status = buffer(offset, 1):le_uint()
+    tree:add_le(iggy_proto, buffer(offset, 1), "Has Status: " .. (has_status == 1 and "Yes" or "No"))
+    offset = offset + 1
+
+    -- Status (if present)
+    if has_status == 1 then
+        if buffer:len() < offset + 1 then return -1 end
+        local status = buffer(offset, 1):le_uint()
+        tree:add_le(iggy_proto, buffer(offset, 1), "New Status: " .. status .. (status == 1 and " (Active)" or " (Inactive)"))
+        offset = offset + 1
+    end
+
+    return offset - start_offset
+end
+
+-- UPDATE_PERMISSIONS (36)
+command_parsers[36] = function(buffer, pinfo, tree, offset)
+    local start_offset = offset
+
+    -- User identifier
+    local consumed = parse_identifier(buffer, offset, tree, "User ID")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Has Permissions flag
+    if buffer:len() < offset + 1 then return -1 end
+    local has_permissions = buffer(offset, 1):le_uint()
+    tree:add_le(iggy_proto, buffer(offset, 1), "Has Permissions: " .. (has_permissions == 1 and "Yes" or "No"))
+    offset = offset + 1
+
+    -- Permissions (if present)
+    if has_permissions == 1 then
+        if buffer:len() < offset + 4 then return -1 end
+        local perm_length = buffer(offset, 4):le_uint()
+        tree:add_le(iggy_proto, buffer(offset, 4), "Permissions Length: " .. perm_length)
+        offset = offset + 4
+
+        if buffer:len() < offset + perm_length then return -1 end
+        tree:add(iggy_proto, buffer(offset, perm_length), "Permissions Data (" .. perm_length .. " bytes)")
+        offset = offset + perm_length
+    end
+
+    return offset - start_offset
+end
+
+-- CHANGE_PASSWORD (37)
+command_parsers[37] = function(buffer, pinfo, tree, offset)
+    local start_offset = offset
+
+    -- User identifier
+    local consumed = parse_identifier(buffer, offset, tree, "User ID")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Current password
+    consumed = parse_string_u8(buffer, offset, tree, f.password, "Current Password")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- New password
+    consumed = parse_string_u8(buffer, offset, tree, f.password, "New Password")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    return offset - start_offset
+end
+
+-- GET_PERSONAL_ACCESS_TOKENS (41) - No payload
+command_parsers[41] = function(buffer, pinfo, tree, offset)
+    tree:add(iggy_proto, buffer(offset, 0), "GET_PERSONAL_ACCESS_TOKENS: No payload")
+    return 0
+end
+
+-- CREATE_PERSONAL_ACCESS_TOKEN (42)
+command_parsers[42] = function(buffer, pinfo, tree, offset)
+    local start_offset = offset
+
+    -- Token name
+    local consumed = parse_string_u8(buffer, offset, tree, f.name, "Token Name")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Expiry (u64)
+    if buffer:len() < offset + 8 then return -1 end
+    tree:add_le(iggy_proto, buffer(offset, 8), "Expiry (u64): " .. buffer(offset, 8):le_uint64())
+    offset = offset + 8
+
+    return offset - start_offset
+end
+
+-- DELETE_PERSONAL_ACCESS_TOKEN (43)
+command_parsers[43] = function(buffer, pinfo, tree, offset)
+    local consumed = parse_string_u8(buffer, offset, tree, f.name, "Token Name")
+    if consumed == 0 then return -1 end
+    return consumed
+end
+
+-- LOGIN_WITH_PERSONAL_ACCESS_TOKEN (44)
+command_parsers[44] = function(buffer, pinfo, tree, offset)
+    local consumed = parse_string_u8(buffer, offset, tree, f.string_u8, "Personal Access Token")
+    if consumed == 0 then return -1 end
+    return consumed
+end
+
 -- GET_CONSUMER_GROUP (600)
 command_parsers[600] = function(buffer, pinfo, tree, offset)
     local start_offset = offset
@@ -813,6 +995,50 @@ command_parsers[605] = function(buffer, pinfo, tree, offset)
     consumed = parse_identifier(buffer, offset, tree, "Consumer Group ID")
     if consumed == 0 then return -1 end
     offset = offset + consumed
+
+    return offset - start_offset
+end
+
+-- CREATE_PARTITIONS (402)
+command_parsers[402] = function(buffer, pinfo, tree, offset)
+    local start_offset = offset
+
+    -- Stream identifier
+    local consumed = parse_identifier(buffer, offset, tree, "Stream ID")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Topic identifier
+    consumed = parse_identifier(buffer, offset, tree, "Topic ID")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Partitions count
+    if buffer:len() < offset + 4 then return -1 end
+    tree:add_le(iggy_proto, buffer(offset, 4), "Partitions Count: " .. buffer(offset, 4):le_uint())
+    offset = offset + 4
+
+    return offset - start_offset
+end
+
+-- DELETE_PARTITIONS (403)
+command_parsers[403] = function(buffer, pinfo, tree, offset)
+    local start_offset = offset
+
+    -- Stream identifier
+    local consumed = parse_identifier(buffer, offset, tree, "Stream ID")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Topic identifier
+    consumed = parse_identifier(buffer, offset, tree, "Topic ID")
+    if consumed == 0 then return -1 end
+    offset = offset + consumed
+
+    -- Partitions count
+    if buffer:len() < offset + 4 then return -1 end
+    tree:add_le(iggy_proto, buffer(offset, 4), "Partitions Count: " .. buffer(offset, 4):le_uint())
+    offset = offset + 4
 
     return offset - start_offset
 end
