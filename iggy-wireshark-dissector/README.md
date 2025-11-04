@@ -4,6 +4,15 @@ Iggy 프로토콜을 분석하기 위한 Wireshark Dissector입니다. 현재는
 - **PING** (code: 1)
 - **GET_STATS** (code: 10)
 
+## 주요 특징
+
+### 실제 Iggy 서버 코드 재사용 ✨
+이 테스트는 **실제 Iggy 서버의 바이너리 직렬화 로직을 그대로 사용**합니다:
+- ✅ `server::binary::command::ServerCommand` enum 사용
+- ✅ `define_server_command_enum!` 매크로가 생성한 `to_bytes()` 메서드 활용
+- ✅ 테스트 패킷 = 실제 서버가 처리하는 패킷과 100% 동일
+- ✅ 코드 중복 없이 실제 구현 재사용
+
 ## 프로토콜 구조
 
 ### Request 구조

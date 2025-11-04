@@ -1,19 +1,32 @@
 use bytes::{BufMut, BytesMut};
+use iggy_common::get_stats::GetStats;
+use iggy_common::ping::Ping;
 use serde_json::Value;
+use server::binary::command::ServerCommand;
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::sleep;
 
-/// Helper function to create a command packet
-fn create_command_packet(code: u32, payload: &[u8]) -> Vec<u8> {
-    let length = 4 + payload.len() as u32;
-    let mut bytes = BytesMut::with_capacity(8 + payload.len());
+/// Create a complete network packet from ServerCommand
+/// Format: [LENGTH (4 bytes)][CODE + PAYLOAD from ServerCommand::to_bytes()]
+///
+/// This uses the actual ServerCommand enum which properly serializes commands
+/// using the same logic as the real Iggy server.
+fn create_packet_from_server_command(command: &ServerCommand) -> Vec<u8> {
+    // ServerCommand::to_bytes() returns [CODE (4 bytes)][PAYLOAD (N bytes)]
+    let command_bytes = command.to_bytes();
+
+    // LENGTH = size of (CODE + PAYLOAD)
+    let length = command_bytes.len() as u32;
+
+    // Build complete packet: [LENGTH (4 bytes)][CODE + PAYLOAD]
+    let mut bytes = BytesMut::with_capacity(4 + command_bytes.len());
     bytes.put_u32_le(length);
-    bytes.put_u32_le(code);
-    bytes.extend_from_slice(payload);
+    bytes.put_slice(&command_bytes);
+
     bytes.to_vec()
 }
 
@@ -29,7 +42,7 @@ impl TsharkCapture {
             .to_string_lossy()
             .to_string();
 
-        let process = Command::new("tshark")
+        let process = ProcessCommand::new("tshark")
             .args([
                 "-i",
                 "lo0", // macOS loopback interface
@@ -130,7 +143,12 @@ async fn test_ping_dissection_with_tshark() {
         .await
         .expect("Failed to connect");
 
-    let ping_packet = create_command_packet(1, &[]);
+    // Use ServerCommand enum - this uses the actual server's serialization logic
+    let ping_command = ServerCommand::Ping(Ping::default());
+    let ping_packet = create_packet_from_server_command(&ping_command);
+
+    println!("Sending PING via ServerCommand: {} bytes", ping_packet.len());
+
     stream
         .write_all(&ping_packet)
         .await
@@ -206,7 +224,12 @@ async fn test_get_stats_dissection_with_tshark() {
         .await
         .expect("Failed to connect");
 
-    let stats_packet = create_command_packet(10, &[]);
+    // Use ServerCommand enum - this uses the actual server's serialization logic
+    let stats_command = ServerCommand::GetStats(GetStats::default());
+    let stats_packet = create_packet_from_server_command(&stats_command);
+
+    println!("Sending GET_STATS via ServerCommand: {} bytes", stats_packet.len());
+
     stream
         .write_all(&stats_packet)
         .await

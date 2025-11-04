@@ -26,7 +26,10 @@ tokio = { workspace = true }
 bytes = { workspace = true }
 anyhow = { workspace = true }
 hex = "0.4"
+iggy_common = { workspace = true }
+server = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 hex = "0.4"
+server = { workspace = true }

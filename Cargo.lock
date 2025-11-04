@@ -4152,7 +4152,9 @@ dependencies = [
  "anyhow",
  "bytes",
  "hex",
+ "iggy_common",
  "serde_json",
+ "server",
  "tokio",
 ]
 
