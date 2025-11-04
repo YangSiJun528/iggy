@@ -4146,6 +4146,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "iggy-wireshark-dissector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "hex",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "iggy_binary_protocol"
 version = "0.7.0"
 dependencies = [
