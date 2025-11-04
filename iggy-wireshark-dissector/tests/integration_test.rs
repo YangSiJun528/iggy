@@ -94,9 +94,9 @@ impl TsharkCapture {
         let json_str = String::from_utf8(output.stdout)?;
 
         // Debug: print JSON
-        println!("=== JSON output ===");
-        println!("{}", json_str);
-        println!("=== end ===");
+        // println!("=== JSON output ===");
+        // println!("{}", json_str);
+        // println!("=== end ===");
 
         let packets: Vec<Value> = serde_json::from_str(&json_str)?;
 
@@ -195,36 +195,44 @@ async fn test_ping_dissection_with_tshark() {
         .find(|p| p["_source"]["layers"].get("iggy").is_some())
         .expect("No Iggy packet found");
 
-    let layers = &iggy_packet["_source"]["layers"];
-    let iggy_layer = &layers["iggy"];
+    for (i, packet) in packets.iter().enumerate() {
+        println!("Packet {}: has iggy = {}", i, packet["_source"]["layers"].get("iggy").is_some());
+        if let Some(iggy) = packet["_source"]["layers"].get("iggy") {
+            // Verify LENGTH field
+            let length_v = &iggy["iggy.length"];
 
-    // Verify LENGTH field
-    let length = iggy_layer["iggy.length"]
-        .as_array()
-        .and_then(|a| a.first())
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u32>().ok())
-        .expect("Failed to parse LENGTH field");
-    assert_eq!(length, 4, "LENGTH field should be 4 for PING");
+            // 일단 이렇게 하면 데이터는 잘 불러오기 함.
+            // 외부에서 검사하는게 맞나? 워래는 위치를 잘못 찍어서 그런걸수도?
+            // 흠... 일다 코드 전체적으로 다듬기 해야 함.
+            // 내 이해를 위해서 적당히 다듬고 치는 작업 ㄱㄱ
+            let length = iggy["iggy.length"]
+                .as_str()
+                .and_then(|s| s.parse::<u32>().ok())
+                .expect("Failed to parse LENGTH field");
+            assert_eq!(length, 4, "LENGTH field should be 4 for PING");
 
-    // Verify CODE field
-    let code = iggy_layer["iggy.code"]
-        .as_array()
-        .and_then(|a| a.first())
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u32>().ok())
-        .expect("Failed to parse CODE field");
-    assert_eq!(code, 1, "CODE field should be 1 for PING");
+            // 이러면 array라 안되는거고
+            // Verify CODE field
+            let code = iggy["iggy.code"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<u32>().ok())
+                .expect("Failed to parse CODE field");
+            assert_eq!(code, 1, "CODE field should be 1 for PING");
 
-    // Verify command name
-    let command_name = iggy_layer["iggy.code_name"]
-        .as_array()
-        .and_then(|a| a.first())
-        .and_then(|v| v.as_str())
-        .expect("Failed to get command name");
-    assert_eq!(command_name, "Ping", "Command name should be 'Ping'");
+            // Verify command name
+            let command_name = iggy["iggy.code_name"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .expect("Failed to get command name");
+            assert_eq!(command_name, "Ping", "Command name should be 'Ping'");
 
-    println!("✓ PING dissection verified successfully!");
+            println!("✓ PING dissection verified successfully!");
+        }
+    }
+    panic!("No Iggy packet found");
 }
 
 #[tokio::test]
@@ -280,7 +288,7 @@ async fn test_get_stats_dissection_with_tshark() {
     let layers = &iggy_packet["_source"]["layers"];
     let iggy_layer = &layers["iggy"];
 
-    let length = iggy_layer["iggy.length"]
+    let length = iggy_layer["length"]
         .as_array()
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
@@ -288,7 +296,7 @@ async fn test_get_stats_dissection_with_tshark() {
         .expect("Failed to parse LENGTH field");
     assert_eq!(length, 4, "LENGTH field should be 4 for GET_STATS");
 
-    let code = iggy_layer["iggy.code"]
+    let code = iggy_layer["code"]
         .as_array()
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
@@ -296,7 +304,7 @@ async fn test_get_stats_dissection_with_tshark() {
         .expect("Failed to parse CODE field");
     assert_eq!(code, 10, "CODE field should be 10 for GET_STATS");
 
-    let command_name = iggy_layer["iggy.code_name"]
+    let command_name = iggy_layer["code_name"]
         .as_array()
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())

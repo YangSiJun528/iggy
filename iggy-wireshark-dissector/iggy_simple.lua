@@ -1,9 +1,6 @@
 -- Iggy Protocol Dissector (Simple Version - Ping & GetStats only)
 -- This is a simple test dissector for learning and testing purposes
 
--- Debug: print when script is loaded
-print("Loading Iggy dissector...")
-
 local iggy_proto = Proto("iggy", "Iggy Protocol")
 
 -- Protocol fields
@@ -24,7 +21,6 @@ function iggy_proto.dissector(buffer, pinfo, tree)
     local length = buffer:len()
     if length == 0 then return end
 
-    print("Iggy dissector called! buffer length:", length)
     pinfo.cols.protocol = iggy_proto.name
 
     local subtree = tree:add(iggy_proto, buffer(), "Iggy Protocol Data")
@@ -71,14 +67,11 @@ function iggy_proto.dissector(buffer, pinfo, tree)
 end
 
 -- Heuristic function to detect Iggy protocol
-function iggy_proto.heuristic(buffer, pinfo, tree)
+local function iggy_heuristic(buffer, pinfo, tree)
     local length = buffer:len()
-
-    print("Heuristic called! buffer length:", length)
 
     -- Need at least 8 bytes for LENGTH + CODE
     if length < 8 then
-        print("  Too short, skipping")
         return false
     end
 
@@ -86,36 +79,28 @@ function iggy_proto.heuristic(buffer, pinfo, tree)
     local msg_length = buffer(0, 4):le_uint()
     local command_code = buffer(4, 4):le_uint()
 
-    print("  msg_length:", msg_length, "command_code:", command_code)
-
     -- Basic sanity checks
     -- LENGTH should be reasonable (4 bytes for code + payload)
     if msg_length < 4 or msg_length > 1000000 then
-        print("  Invalid length, skipping")
         return false
     end
 
     -- For our simple test, check if CODE is 1 (Ping) or 10 (GetStats)
     if command_code == 1 or command_code == 10 then
-        print("  Recognized as Iggy packet! Calling dissector...")
         -- Call the actual dissector
         iggy_proto.dissector(buffer, pinfo, tree)
         return true
     end
 
-    print("  Not an Iggy packet (unknown code)")
     return false
 end
 
 -- Register heuristic dissector for TCP
-print("Registering Iggy heuristic dissector...")
-iggy_proto:register_heuristic("tcp", iggy_proto.heuristic)
+iggy_proto:register_heuristic("tcp", iggy_heuristic)
 
 -- Also register on specific ports for completeness
-print("Registering Iggy on ports 8090, 8091, 8092...")
+-- 이거 하면 안되고 전체 다 거는게 안전할거 같은디
 local tcp_port = DissectorTable.get("tcp.port")
 tcp_port:add(8090, iggy_proto)
 tcp_port:add(8091, iggy_proto)
 tcp_port:add(8092, iggy_proto)
-
-print("Iggy dissector loaded successfully!")
