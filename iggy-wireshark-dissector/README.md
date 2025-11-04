@@ -62,13 +62,13 @@ ln -s $(pwd)/iggy_simple.lua ~/.local/lib/wireshark/plugins/
 
 ## 사전 준비
 
-### tshark 설치
+### 필수 도구 설치
 
-통합 테스트를 실행하려면 tshark (Wireshark CLI)가 필요합니다:
+통합 테스트를 실행하려면 tshark가 필요합니다:
 
 ```bash
 # macOS
-brew install wireshark
+brew install wireshark  # tshark 포함
 
 # Ubuntu/Debian
 sudo apt-get install tshark
@@ -81,19 +81,27 @@ tshark --version
 
 ### 방법 1: 통합 테스트 (권장)
 
-실제 tshark를 실행하여 dissector가 올바르게 작동하는지 자동으로 검증합니다:
+tshark를 사용하여 dissector가 올바르게 작동하는지 자동으로 검증합니다:
 
 ```bash
 # 통합 테스트 실행 (tshark 필요)
 cargo test -p iggy-wireshark-dissector --test integration_test -- --ignored --nocapture
 ```
 
-이 테스트는:
-- ✅ tshark를 자동으로 실행하고 live capture 모드로 패킷 캡처
-- ✅ Dummy TCP 서버를 시작하여 패킷 수신
-- ✅ PING과 GET_STATS 패킷을 전송
-- ✅ tshark의 JSON 출력을 파싱하여 dissection 결과 검증
-- ✅ LENGTH, CODE, Command Name 필드가 올바르게 파싱되었는지 확인
+**테스트 동작 방식**:
+1. ✅ `tshark -i lo0 -w file.pcap`로 패킷을 pcap 파일에 캡처
+2. ✅ Dummy TCP 서버 시작
+3. ✅ 실제 `ServerCommand` enum으로 PING/GET_STATS 패킷 생성 및 전송
+4. ✅ tshark 중지 후 pcap 파일 저장
+5. ✅ `tshark -r file.pcap -T json`으로 분석 (Lua dissector 사용)
+6. ✅ JSON 출력 파싱하여 dissection 결과 검증
+7. ✅ LENGTH, CODE, Command Name 필드 확인
+
+**장점**:
+- tshark 하나로 캡처와 분석 모두 처리
+- Blocking I/O 문제 없음 (pcap 파일 사용)
+- 실제 네트워크 스택을 통한 완전한 end-to-end 테스트
+- 캡처된 패킷을 재분석 가능
 
 ### 방법 2: 수동 테스트 (실제 Iggy 서버)
 
