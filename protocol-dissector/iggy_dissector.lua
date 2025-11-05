@@ -219,24 +219,49 @@ iggy.fields = all_fields
 -- Helper: Detect if packet is request or response
 ----------------------------------------
 local function detect_message_type(tvbuf)
-    if tvbuf:len() < 8 then
+    local pktlen = tvbuf:len()
+    if pktlen < 8 then
         return nil
     end
 
     local first_field = tvbuf:range(0, 4):le_uint()
     local second_field = tvbuf:range(4, 4):le_uint()
 
-    -- Heuristic: If first field looks like reasonable length
-    -- and second field is a known request code, it's likely a request
-    if first_field >= 4 and first_field <= 1000000 then
-        if commands[second_field] then
+    -- Try to detect as Request first
+    -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
+    -- where LENGTH = CODE(4) + PAYLOAD(N)
+    -- Total packet size = 4 + LENGTH
+    if commands[second_field] then
+        -- second_field is a known command code
+        local expected_total = 4 + first_field
+        if expected_total == pktlen and first_field >= 4 then
             return "request"
         end
     end
 
-    -- Heuristic: If first field is small (status code 0-100)
-    -- it's likely a response
-    if first_field <= 100 then
+    -- Try to detect as Response
+    -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
+    -- Error handling: if STATUS != 0, LENGTH = 0 (no payload)
+    -- Success: if STATUS = 0, LENGTH = payload length
+    -- Total packet size = 8 + payload_length = 8 + LENGTH
+
+    -- For error responses: STATUS != 0, LENGTH = 0
+    if first_field ~= 0 and second_field == 0 and pktlen == 8 then
+        return "response"
+    end
+
+    -- For success responses: STATUS = 0, LENGTH >= 0
+    if first_field == 0 then
+        local expected_total = 8 + second_field
+        if expected_total == pktlen then
+            return "response"
+        end
+    end
+
+    -- Additional heuristic for responses with unknown status codes
+    -- Check if packet size matches the length field assumption
+    local expected_total = 8 + second_field
+    if expected_total == pktlen and second_field < 1000000 then
         return "response"
     end
 
@@ -254,10 +279,11 @@ local function dissect_request(tvbuf, pktinfo, tree)
         return 0
     end
 
-    -- Read LENGTH field (excluding itself)
+    -- Read LENGTH field (at offset 0)
+    -- LENGTH = CODE(4) + PAYLOAD(N)
     local msg_length = tvbuf:range(0, 4):le_uint()
 
-    -- Total message size = LENGTH field (4 bytes) + msg_length
+    -- Total message size = LENGTH field (4 bytes) + LENGTH value
     local total_len = 4 + msg_length
 
     -- Check if we have the complete message
@@ -317,9 +343,10 @@ local function dissect_response(tvbuf, pktinfo, tree)
     end
 
     -- Read LENGTH field (at offset 4)
+    -- LENGTH = payload length (0 for error responses)
     local msg_length = tvbuf:range(4, 4):le_uint()
 
-    -- Total message size = STATUS(4) + LENGTH(4) + payload
+    -- Total message size = STATUS(4) + LENGTH(4) + PAYLOAD(LENGTH)
     local total_len = 8 + msg_length
 
     -- Check if we have the complete message
