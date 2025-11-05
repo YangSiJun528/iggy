@@ -145,7 +145,6 @@ mod tests {
         let ping_packet = create_packet_from_server_command(&ping_command);
 
         println!("Sending PING via ServerCommand: {} bytes", ping_packet.len());
-        println!("  Hex: {}", hex::encode(&ping_packet));
 
         stream
             .write_all(&ping_packet)
@@ -216,7 +215,6 @@ mod tests {
         let stats_packet = create_packet_from_server_command(&stats_command);
 
         println!("Sending GET_STATS via ServerCommand: {} bytes", stats_packet.len());
-        println!("  Hex: {}", hex::encode(&stats_packet));
 
         stream
             .write_all(&stats_packet)
@@ -281,7 +279,6 @@ mod tests {
         let login_packet = create_packet_from_server_command(&login_command);
 
         println!("Sending LOGIN_USER via ServerCommand: {} bytes", login_packet.len());
-        println!("  Hex: {}", hex::encode(&login_packet));
 
         stream
             .write_all(&login_packet)
