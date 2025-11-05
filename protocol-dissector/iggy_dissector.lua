@@ -1,25 +1,30 @@
--- Iggy Protocol Dissector for Wireshark
--- Supports TCP/QUIC binary protocol (excluding HTTP/JSON)
--- Based on the structure of dns_dissector.lua example
+-- Iggy Protocol Dissector
+-- Supports Request/Response detection with extensible command registry
+
+local iggy = Proto("iggy", "Iggy Protocol")
 
 ----------------------------------------
--- Protocol definition
-local iggy_proto = Proto("iggy", "Iggy Protocol")
+-- Constants
+----------------------------------------
+local IGGY_MIN_HEADER_LEN = 8  -- Minimum: LENGTH(4) + CODE/STATUS(4)
 
 ----------------------------------------
 -- Protocol fields
+----------------------------------------
+-- Common
+local pf_message_type   = ProtoField.string("iggy.message_type", "Message Type")
+
 -- Request fields
-local pf_msg_type           = ProtoField.string("iggy.message_type", "Message Type")
-local pf_req_length         = ProtoField.uint32("iggy.request.length", "Length", base.DEC)
-local pf_req_code           = ProtoField.uint32("iggy.request.code", "Code", base.DEC)
-local pf_req_code_name      = ProtoField.string("iggy.request.code_name", "Command")
-local pf_req_payload        = ProtoField.bytes("iggy.request.payload", "Payload")
+local pf_req_length     = ProtoField.uint32("iggy.request.length", "Length", base.DEC)
+local pf_req_code       = ProtoField.uint32("iggy.request.code", "Command Code", base.DEC)
+local pf_req_code_name  = ProtoField.string("iggy.request.code_name", "Command Name")
+local pf_req_payload    = ProtoField.bytes("iggy.request.payload", "Payload")
 
 -- Response fields
-local pf_resp_status        = ProtoField.uint32("iggy.response.status", "Status", base.DEC)
-local pf_resp_status_name   = ProtoField.string("iggy.response.status_name", "Status Name")
-local pf_resp_length        = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
-local pf_resp_payload       = ProtoField.bytes("iggy.response.payload", "Payload")
+local pf_resp_status    = ProtoField.uint32("iggy.response.status", "Status", base.DEC)
+local pf_resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name")
+local pf_resp_length    = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
+local pf_resp_payload   = ProtoField.bytes("iggy.response.payload", "Payload")
 
 -- LoginUser payload fields
 local pf_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
@@ -31,9 +36,8 @@ local pf_login_version      = ProtoField.string("iggy.login.version", "Version")
 local pf_login_context_len  = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
 local pf_login_context      = ProtoField.string("iggy.login.context", "Context")
 
--- Register all fields
-iggy_proto.fields = {
-    pf_msg_type,
+iggy.fields = {
+    pf_message_type,
     pf_req_length, pf_req_code, pf_req_code_name, pf_req_payload,
     pf_resp_status, pf_resp_status_name, pf_resp_length, pf_resp_payload,
     pf_login_username_len, pf_login_username,
@@ -43,43 +47,149 @@ iggy_proto.fields = {
 }
 
 ----------------------------------------
--- Expert info fields
-local ef_too_short      = ProtoExpert.new("iggy.too_short.expert", "Iggy message too short",
+-- Expert info
+----------------------------------------
+local ef_too_short      = ProtoExpert.new("iggy.too_short.expert",
+                                          "Iggy packet too short",
                                           expert.group.MALFORMED, expert.severity.ERROR)
-local ef_invalid_length = ProtoExpert.new("iggy.invalid_length.expert", "Iggy invalid length field",
+local ef_invalid_length = ProtoExpert.new("iggy.invalid_length.expert",
+                                          "Invalid length field",
                                           expert.group.MALFORMED, expert.severity.WARN)
-local ef_request        = ProtoExpert.new("iggy.request.expert", "Iggy request message",
-                                          expert.group.REQUEST_CODE, expert.severity.CHAT)
-local ef_response       = ProtoExpert.new("iggy.response.expert", "Iggy response message",
-                                          expert.group.RESPONSE_CODE, expert.severity.CHAT)
+local ef_error_status   = ProtoExpert.new("iggy.error_status.expert",
+                                          "Error response",
+                                          expert.group.RESPONSE_CODE, expert.severity.WARN)
 
--- Register expert info fields
-iggy_proto.experts = { ef_too_short, ef_invalid_length, ef_request, ef_response }
+iggy.experts = { ef_too_short, ef_invalid_length, ef_error_status }
 
 ----------------------------------------
--- Command code to name mapping
-local command_names = {
-    [1] = "Ping",
-    [10] = "GetStats",
-    [11] = "GetSnapshot",
-    [12] = "GetClusterMetadata",
-    [20] = "GetMe",
-    [21] = "GetClient",
-    [22] = "GetClients",
-    [31] = "GetUser",
-    [32] = "GetUsers",
-    [33] = "CreateUser",
-    [34] = "DeleteUser",
-    [35] = "UpdateUser",
-    [36] = "UpdatePermissions",
-    [37] = "ChangePassword",
-    [38] = "LoginUser",
-    [39] = "LogoutUser",
+-- Command-specific payload dissectors
+----------------------------------------
+local function dissect_login_user_payload(tvbuf, payload_tree, offset, payload_len)
+    local pktlen = offset + payload_len
+
+    -- Username
+    if offset < pktlen then
+        local username_len = tvbuf:range(offset, 1):uint()
+        payload_tree:add(pf_login_username_len, tvbuf:range(offset, 1))
+        offset = offset + 1
+
+        if username_len > 0 and offset + username_len <= pktlen then
+            payload_tree:add(pf_login_username, tvbuf:range(offset, username_len))
+            offset = offset + username_len
+        end
+    end
+
+    -- Password
+    if offset < pktlen then
+        local password_len = tvbuf:range(offset, 1):uint()
+        payload_tree:add(pf_login_password_len, tvbuf:range(offset, 1))
+        offset = offset + 1
+
+        if password_len > 0 and offset + password_len <= pktlen then
+            payload_tree:add(pf_login_password, tvbuf:range(offset, password_len))
+            offset = offset + password_len
+        end
+    end
+
+    -- Version
+    if offset + 4 <= pktlen then
+        local version_len = tvbuf:range(offset, 4):le_uint()
+        payload_tree:add_le(pf_login_version_len, tvbuf:range(offset, 4))
+        offset = offset + 4
+
+        if version_len > 0 and offset + version_len <= pktlen then
+            payload_tree:add(pf_login_version, tvbuf:range(offset, version_len))
+            offset = offset + version_len
+        end
+    end
+
+    -- Context
+    if offset + 4 <= pktlen then
+        local context_len = tvbuf:range(offset, 4):le_uint()
+        payload_tree:add_le(pf_login_context_len, tvbuf:range(offset, 4))
+        offset = offset + 4
+
+        if context_len > 0 and offset + context_len <= pktlen then
+            payload_tree:add(pf_login_context, tvbuf:range(offset, context_len))
+            offset = offset + context_len
+        end
+    end
+end
+
+----------------------------------------
+-- Command Registry
+-- All command-related information in one place
+----------------------------------------
+local commands = {
+    [1] = {
+        name = "Ping",
+        dissect_payload = nil,  -- No payload
+    },
+    [10] = {
+        name = "GetStats",
+        dissect_payload = nil,  -- No payload
+    },
+    [11] = {
+        name = "GetSnapshot",
+        dissect_payload = nil,
+    },
+    [12] = {
+        name = "GetClusterMetadata",
+        dissect_payload = nil,
+    },
+    [20] = {
+        name = "GetMe",
+        dissect_payload = nil,
+    },
+    [21] = {
+        name = "GetClient",
+        dissect_payload = nil,
+    },
+    [22] = {
+        name = "GetClients",
+        dissect_payload = nil,
+    },
+    [31] = {
+        name = "GetUser",
+        dissect_payload = nil,
+    },
+    [32] = {
+        name = "GetUsers",
+        dissect_payload = nil,
+    },
+    [33] = {
+        name = "CreateUser",
+        dissect_payload = nil,
+    },
+    [34] = {
+        name = "DeleteUser",
+        dissect_payload = nil,
+    },
+    [35] = {
+        name = "UpdateUser",
+        dissect_payload = nil,
+    },
+    [36] = {
+        name = "UpdatePermissions",
+        dissect_payload = nil,
+    },
+    [37] = {
+        name = "ChangePassword",
+        dissect_payload = nil,
+    },
+    [38] = {
+        name = "LoginUser",
+        dissect_payload = dissect_login_user_payload,
+    },
+    [39] = {
+        name = "LogoutUser",
+        dissect_payload = nil,
+    },
 }
 
--- Error code to name mapping
-local status_names = {
-    [0] = "Success",
+-- Status code mappings
+local status_codes = {
+    [0] = "OK",
     [1] = "Error",
     [2] = "InvalidConfiguration",
     [3] = "InvalidCommand",
@@ -91,236 +201,194 @@ local status_names = {
 }
 
 ----------------------------------------
--- Constants
-local IGGY_MIN_LEN = 8  -- Minimum message length (length/status + code/length fields)
-
+-- Helper: Detect if packet is request or response
 ----------------------------------------
--- Helper function: Parse LoginUser payload
-local function parse_login_user_payload(tvbuf, tree, offset)
-    local remaining = tvbuf:len() - offset
-    if remaining < 2 then
-        return
+local function detect_message_type(tvbuf)
+    if tvbuf:len() < 8 then
+        return nil
     end
 
-    -- Username
-    local username_len = tvbuf(offset, 1):le_uint()
-    tree:add_le(pf_login_username_len, tvbuf(offset, 1))
-    offset = offset + 1
-    remaining = remaining - 1
+    -- Try to parse as request first
+    local first_field = tvbuf:range(0, 4):le_uint()
+    local second_field = tvbuf:range(4, 4):le_uint()
 
-    if remaining < username_len then
-        return
-    end
-
-    local username = tvbuf(offset, username_len):string()
-    tree:add(pf_login_username, tvbuf(offset, username_len))
-    offset = offset + username_len
-    remaining = remaining - username_len
-
-    -- Password
-    if remaining < 1 then
-        return
-    end
-
-    local password_len = tvbuf(offset, 1):le_uint()
-    tree:add_le(pf_login_password_len, tvbuf(offset, 1))
-    offset = offset + 1
-    remaining = remaining - 1
-
-    if remaining < password_len then
-        return
-    end
-
-    tree:add(pf_login_password, tvbuf(offset, password_len), "******")
-    offset = offset + password_len
-    remaining = remaining - password_len
-
-    -- Version (optional)
-    if remaining >= 4 then
-        local version_len = tvbuf(offset, 4):le_uint()
-        tree:add_le(pf_login_version_len, tvbuf(offset, 4))
-        offset = offset + 4
-        remaining = remaining - 4
-
-        if version_len > 0 and remaining >= version_len then
-            local version = tvbuf(offset, version_len):string()
-            tree:add(pf_login_version, tvbuf(offset, version_len))
-            offset = offset + version_len
-            remaining = remaining - version_len
-        end
-
-        -- Context (optional)
-        if remaining >= 4 then
-            local context_len = tvbuf(offset, 4):le_uint()
-            tree:add_le(pf_login_context_len, tvbuf(offset, 4))
-            offset = offset + 4
-            remaining = remaining - 4
-
-            if context_len > 0 and remaining >= context_len then
-                local context = tvbuf(offset, context_len):string()
-                tree:add(pf_login_context, tvbuf(offset, context_len))
-            end
+    -- Heuristic: If first field looks like reasonable length
+    -- and second field is a known request code, it's likely a request
+    if first_field >= 4 and first_field <= 1000000 then
+        if commands[second_field] then
+            return "request"
         end
     end
 
-    return username
+    -- Heuristic: If first field is small (status code 0-100)
+    -- it's likely a response
+    if first_field <= 100 then
+        return "response"
+    end
+
+    return nil
 end
 
 ----------------------------------------
--- Main dissector function
-function iggy_proto.dissector(tvbuf, pktinfo, root)
-    local pktlen = tvbuf:reported_length_remaining()
-
-    -- Set protocol column
-    pktinfo.cols.protocol:set("Iggy")
-
-    -- Add protocol tree
-    local tree = root:add(iggy_proto, tvbuf:range(0, pktlen))
-
-    -- Check minimum length
-    if pktlen < IGGY_MIN_LEN then
-        tree:add_proto_expert_info(ef_too_short)
-        return 0
-    end
-
-    local first_u32 = tvbuf(0, 4):le_uint()
-    local second_u32 = tvbuf(4, 4):le_uint()
-
-    -- Determine if Request or Response
-    local is_request = command_names[second_u32] ~= nil
-
-    if is_request then
-        -- Parse Request
-        local length = first_u32
-        local code = second_u32
-        local code_name = command_names[code] or "Unknown"
-
-        tree:add(pf_msg_type, "Request")
-        tree:add_le(pf_req_length, tvbuf(0, 4))
-        tree:add_le(pf_req_code, tvbuf(4, 4))
-        tree:add(pf_req_code_name, code_name)
-
-        -- Add expert info
-        tree:add_proto_expert_info(ef_request, "Request: " .. code_name)
-
-        -- Set info column
-        pktinfo.cols.info:set(string.format("Request: %s (Code: %d)", code_name, code))
-
-        -- Validate length
-        local expected_len = 4 + length
-        if expected_len ~= pktlen then
-            tree:add_proto_expert_info(ef_invalid_length,
-                string.format("Length mismatch: expected %d, got %d", expected_len, pktlen))
-        end
-
-        -- Parse payload
-        if length > 4 then
-            local payload_len = length - 4
-            if pktlen >= 8 + payload_len then
-                local payload_tree = tree:add(pf_req_payload, tvbuf(8, payload_len))
-
-                -- Parse specific command payloads
-                if code == 38 then  -- LoginUser
-                    local username = parse_login_user_payload(tvbuf, payload_tree, 8)
-                    if username then
-                        pktinfo.cols.info:append(string.format(" (User: %s)", username))
-                    end
-                end
-            end
-        end
-
-    else
-        -- Parse Response
-        local status = first_u32
-        local length = second_u32
-        local status_name = status_names[status] or string.format("Unknown (%d)", status)
-
-        tree:add(pf_msg_type, "Response")
-        tree:add_le(pf_resp_status, tvbuf(0, 4))
-        tree:add(pf_resp_status_name, status_name)
-        tree:add_le(pf_resp_length, tvbuf(4, 4))
-
-        -- Add expert info
-        tree:add_proto_expert_info(ef_response, "Response: " .. status_name)
-
-        -- Set info column
-        pktinfo.cols.info:set(string.format("Response: %s (Status: %d)", status_name, status))
-
-        -- Validate length
-        local payload_len = length > 4 and (length - 4) or 0
-        local expected_len = 8 + payload_len
-        if length > 0 and expected_len ~= pktlen then
-            tree:add_proto_expert_info(ef_invalid_length,
-                string.format("Length mismatch: expected %d, got %d", expected_len, pktlen))
-        end
-
-        -- Parse payload (only for successful responses)
-        if status == 0 and length > 4 then
-            if pktlen >= 8 + payload_len then
-                tree:add(pf_resp_payload, tvbuf(8, payload_len))
-            end
-        end
-    end
-
-    return pktlen
-end
-
+-- Request dissector
 ----------------------------------------
--- Heuristic dissector function
-local function heur_dissect_iggy(tvbuf, pktinfo, root)
+local function dissect_request(tvbuf, pktinfo, tree)
     local pktlen = tvbuf:len()
 
     -- Check minimum length
-    if pktlen < IGGY_MIN_LEN then
-        return false
+    if pktlen < IGGY_MIN_HEADER_LEN then
+        return 0
     end
 
-    local first_u32 = tvbuf(0, 4):le_uint()
-    local second_u32 = tvbuf(4, 4):le_uint()
+    -- Read LENGTH field (excluding itself)
+    local msg_length = tvbuf:range(0, 4):le_uint()
 
-    -- Check if it's a Request
-    if command_names[second_u32] then
-        -- Verify length field
-        local expected_total = 4 + first_u32
-        if expected_total == pktlen then
-            iggy_proto.dissector(tvbuf, pktinfo, root)
-            pktinfo.conversation = iggy_proto
-            return true
+    -- Total message size = LENGTH field (4 bytes) + msg_length
+    local total_len = 4 + msg_length
+
+    -- Check if we have the complete message
+    if pktlen < total_len then
+        return 0
+    end
+
+    local subtree = tree:add(iggy, tvbuf:range(0, total_len), "Iggy Request")
+    subtree:add(pf_message_type, "Request"):set_generated()
+
+    -- LENGTH field
+    subtree:add_le(pf_req_length, tvbuf:range(0, 4))
+
+    -- CODE field
+    local command_code = tvbuf:range(4, 4):le_uint()
+    subtree:add_le(pf_req_code, tvbuf:range(4, 4))
+
+    -- Get command info from registry
+    local command_info = commands[command_code]
+    local command_name = command_info and command_info.name or string.format("Unknown(0x%x)", command_code)
+    subtree:add(pf_req_code_name, command_name):set_generated()
+
+    -- PAYLOAD
+    local payload_len = total_len - 8
+    if payload_len > 0 then
+        local payload_tree = subtree:add(pf_req_payload, tvbuf:range(8, payload_len))
+
+        -- Use command-specific payload dissector if available
+        if command_info and command_info.dissect_payload then
+            command_info.dissect_payload(tvbuf, payload_tree, 8, payload_len)
         end
     end
 
-    -- Check if it's a Response
-    -- Status codes should be reasonable (0-100 for common errors)
-    if first_u32 <= 100 then
-        local length = second_u32
+    -- Update info column
+    pktinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)",
+                                        command_name, command_code, msg_length))
 
-        -- For error responses (status != 0), length is usually 0
-        if first_u32 ~= 0 and length == 0 then
-            if pktlen == 8 then
-                iggy_proto.dissector(tvbuf, pktinfo, root)
-                pktinfo.conversation = iggy_proto
-                return true
-            end
-        end
-
-        -- For success responses
-        if first_u32 == 0 then
-            local payload_len = length > 4 and (length - 4) or 0
-            local expected_total = 8 + payload_len
-
-            if expected_total == pktlen or length == 0 then
-                iggy_proto.dissector(tvbuf, pktinfo, root)
-                pktinfo.conversation = iggy_proto
-                return true
-            end
-        end
+    -- Validate length
+    local expected_length = 4 + payload_len
+    if msg_length ~= expected_length then
+        subtree:add_proto_expert_info(ef_invalid_length,
+            string.format("Length mismatch: field=%d, expected=%d", msg_length, expected_length))
     end
 
-    return false
+    return total_len
 end
 
 ----------------------------------------
--- Register heuristic dissector for TCP
-iggy_proto:register_heuristic("tcp", heur_dissect_iggy)
+-- Response dissector
+----------------------------------------
+local function dissect_response(tvbuf, pktinfo, tree)
+    local pktlen = tvbuf:len()
 
--- Protocol is automatically registered when script finishes loading
+    -- Check minimum length
+    if pktlen < IGGY_MIN_HEADER_LEN then
+        return 0
+    end
+
+    -- Read LENGTH field (at offset 4)
+    local msg_length = tvbuf:range(4, 4):le_uint()
+
+    -- Total message size = STATUS(4) + LENGTH(4) + payload
+    local total_len = 8 + msg_length
+
+    -- Check if we have the complete message
+    if pktlen < total_len then
+        return 0
+    end
+
+    local subtree = tree:add(iggy, tvbuf:range(0, total_len), "Iggy Response")
+    subtree:add(pf_message_type, "Response"):set_generated()
+
+    -- STATUS field
+    local status = tvbuf:range(0, 4):le_uint()
+    subtree:add_le(pf_resp_status, tvbuf:range(0, 4))
+
+    -- Status name
+    local status_name = status_codes[status] or (status == 0 and "OK" or string.format("Error(%d)", status))
+    subtree:add(pf_resp_status_name, status_name):set_generated()
+
+    -- LENGTH field
+    subtree:add_le(pf_resp_length, tvbuf:range(4, 4))
+
+    -- PAYLOAD
+    local payload_len = total_len - 8
+    if payload_len > 0 then
+        subtree:add(pf_resp_payload, tvbuf:range(8, payload_len))
+    end
+
+    -- Update info column
+    if status == 0 then
+        pktinfo.cols.info:set(string.format("Response: OK (length=%d)", msg_length))
+    else
+        pktinfo.cols.info:set(string.format("Response: %s (status=%d, length=%d)",
+                                            status_name, status, msg_length))
+        subtree:add_proto_expert_info(ef_error_status,
+            string.format("Error status: %d", status))
+    end
+
+    -- Validate: error responses should have length=0
+    if status ~= 0 and msg_length ~= 0 then
+        subtree:add_proto_expert_info(ef_invalid_length,
+            "Error response should have length=0")
+    end
+
+    return total_len
+end
+
+----------------------------------------
+-- Main dissector
+----------------------------------------
+function iggy.dissector(tvbuf, pktinfo, root)
+    pktinfo.cols.protocol:set("IGGY")
+
+    local msg_type = detect_message_type(tvbuf)
+
+    if msg_type == "request" then
+        return dissect_request(tvbuf, pktinfo, root)
+    elseif msg_type == "response" then
+        return dissect_response(tvbuf, pktinfo, root)
+    else
+        local tree = root:add(iggy, tvbuf(), "Iggy Protocol (Unknown)")
+        tree:add_proto_expert_info(ef_too_short, "Cannot determine message type")
+        return 0
+    end
+end
+
+----------------------------------------
+-- Heuristic dissector
+----------------------------------------
+local function heur_dissect_iggy(tvbuf, pktinfo, root)
+    if tvbuf:len() < 8 then
+        return false
+    end
+
+    local msg_type = detect_message_type(tvbuf)
+
+    if not msg_type then
+        return false
+    end
+
+    iggy.dissector(tvbuf, pktinfo, root)
+    pktinfo.conversation = iggy
+
+    return true
+end
+
+iggy:register_heuristic("tcp", heur_dissect_iggy)
