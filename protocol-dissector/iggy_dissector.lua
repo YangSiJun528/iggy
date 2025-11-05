@@ -1,43 +1,62 @@
 -- Iggy Protocol Dissector for Wireshark
 -- Supports TCP/QUIC binary protocol (excluding HTTP/JSON)
+-- Based on the structure of dns_dissector.lua example
 
+----------------------------------------
 -- Protocol definition
 local iggy_proto = Proto("iggy", "Iggy Protocol")
 
--- Fields for Request
-local f_msg_type = ProtoField.string("iggy.message_type", "Message Type")
-local f_req_length = ProtoField.uint32("iggy.request.length", "Length", base.DEC)
-local f_req_code = ProtoField.uint32("iggy.request.code", "Code", base.DEC)
-local f_req_code_name = ProtoField.string("iggy.request.code_name", "Command")
-local f_req_payload = ProtoField.bytes("iggy.request.payload", "Payload")
+----------------------------------------
+-- Protocol fields
+-- Request fields
+local pf_msg_type           = ProtoField.string("iggy.message_type", "Message Type")
+local pf_req_length         = ProtoField.uint32("iggy.request.length", "Length", base.DEC)
+local pf_req_code           = ProtoField.uint32("iggy.request.code", "Code", base.DEC)
+local pf_req_code_name      = ProtoField.string("iggy.request.code_name", "Command")
+local pf_req_payload        = ProtoField.bytes("iggy.request.payload", "Payload")
 
--- Fields for Response
-local f_resp_status = ProtoField.uint32("iggy.response.status", "Status", base.DEC)
-local f_resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name")
-local f_resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
-local f_resp_payload = ProtoField.bytes("iggy.response.payload", "Payload")
+-- Response fields
+local pf_resp_status        = ProtoField.uint32("iggy.response.status", "Status", base.DEC)
+local pf_resp_status_name   = ProtoField.string("iggy.response.status_name", "Status Name")
+local pf_resp_length        = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
+local pf_resp_payload       = ProtoField.bytes("iggy.response.payload", "Payload")
 
--- Fields for LoginUser payload
-local f_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
-local f_login_username = ProtoField.string("iggy.login.username", "Username")
-local f_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
-local f_login_password = ProtoField.string("iggy.login.password", "Password")
-local f_login_version_len = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC)
-local f_login_version = ProtoField.string("iggy.login.version", "Version")
-local f_login_context_len = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
-local f_login_context = ProtoField.string("iggy.login.context", "Context")
+-- LoginUser payload fields
+local pf_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
+local pf_login_username     = ProtoField.string("iggy.login.username", "Username")
+local pf_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
+local pf_login_password     = ProtoField.string("iggy.login.password", "Password")
+local pf_login_version_len  = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC)
+local pf_login_version      = ProtoField.string("iggy.login.version", "Version")
+local pf_login_context_len  = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
+local pf_login_context      = ProtoField.string("iggy.login.context", "Context")
 
 -- Register all fields
 iggy_proto.fields = {
-    f_msg_type,
-    f_req_length, f_req_code, f_req_code_name, f_req_payload,
-    f_resp_status, f_resp_status_name, f_resp_length, f_resp_payload,
-    f_login_username_len, f_login_username,
-    f_login_password_len, f_login_password,
-    f_login_version_len, f_login_version,
-    f_login_context_len, f_login_context
+    pf_msg_type,
+    pf_req_length, pf_req_code, pf_req_code_name, pf_req_payload,
+    pf_resp_status, pf_resp_status_name, pf_resp_length, pf_resp_payload,
+    pf_login_username_len, pf_login_username,
+    pf_login_password_len, pf_login_password,
+    pf_login_version_len, pf_login_version,
+    pf_login_context_len, pf_login_context
 }
 
+----------------------------------------
+-- Expert info fields
+local ef_too_short      = ProtoExpert.new("iggy.too_short.expert", "Iggy message too short",
+                                          expert.group.MALFORMED, expert.severity.ERROR)
+local ef_invalid_length = ProtoExpert.new("iggy.invalid_length.expert", "Iggy invalid length field",
+                                          expert.group.MALFORMED, expert.severity.WARN)
+local ef_request        = ProtoExpert.new("iggy.request.expert", "Iggy request message",
+                                          expert.group.REQUEST_CODE, expert.severity.CHAT)
+local ef_response       = ProtoExpert.new("iggy.response.expert", "Iggy response message",
+                                          expert.group.RESPONSE_CODE, expert.severity.CHAT)
+
+-- Register expert info fields
+iggy_proto.experts = { ef_too_short, ef_invalid_length, ef_request, ef_response }
+
+----------------------------------------
 -- Command code to name mapping
 local command_names = {
     [1] = "Ping",
@@ -58,8 +77,8 @@ local command_names = {
     [39] = "LogoutUser",
 }
 
--- Error code to name mapping (subset)
-local error_names = {
+-- Error code to name mapping
+local status_names = {
     [0] = "Success",
     [1] = "Error",
     [2] = "InvalidConfiguration",
@@ -71,227 +90,237 @@ local error_names = {
     [44] = "InvalidPassword",
 }
 
--- Parse LoginUser payload
-local function parse_login_user_payload(buffer, pinfo, tree, offset)
-    local payload_len = buffer:len() - offset
-    if payload_len < 2 then
+----------------------------------------
+-- Constants
+local IGGY_MIN_LEN = 8  -- Minimum message length (length/status + code/length fields)
+
+----------------------------------------
+-- Helper function: Parse LoginUser payload
+local function parse_login_user_payload(tvbuf, tree, offset)
+    local remaining = tvbuf:len() - offset
+    if remaining < 2 then
         return
     end
 
     -- Username
-    local username_len = buffer(offset, 1):le_uint()
-    tree:add_le(f_login_username_len, buffer(offset, 1))
+    local username_len = tvbuf(offset, 1):le_uint()
+    tree:add_le(pf_login_username_len, tvbuf(offset, 1))
     offset = offset + 1
+    remaining = remaining - 1
 
-    if payload_len < 1 + username_len then
+    if remaining < username_len then
         return
     end
 
-    local username = buffer(offset, username_len):string()
-    tree:add(f_login_username, buffer(offset, username_len))
+    local username = tvbuf(offset, username_len):string()
+    tree:add(pf_login_username, tvbuf(offset, username_len))
     offset = offset + username_len
+    remaining = remaining - username_len
 
     -- Password
-    if payload_len < 1 + username_len + 1 then
+    if remaining < 1 then
         return
     end
 
-    local password_len = buffer(offset, 1):le_uint()
-    tree:add_le(f_login_password_len, buffer(offset, 1))
+    local password_len = tvbuf(offset, 1):le_uint()
+    tree:add_le(pf_login_password_len, tvbuf(offset, 1))
     offset = offset + 1
+    remaining = remaining - 1
 
-    if payload_len < 1 + username_len + 1 + password_len then
+    if remaining < password_len then
         return
     end
 
-    local password = buffer(offset, password_len):string()
-    tree:add(f_login_password, buffer(offset, password_len), "******")
+    tree:add(pf_login_password, tvbuf(offset, password_len), "******")
     offset = offset + password_len
+    remaining = remaining - password_len
 
     -- Version (optional)
-    if payload_len >= offset - (1 + username_len + 1 + password_len) + 4 then
-        local version_len = buffer(offset, 4):le_uint()
-        tree:add_le(f_login_version_len, buffer(offset, 4))
+    if remaining >= 4 then
+        local version_len = tvbuf(offset, 4):le_uint()
+        tree:add_le(pf_login_version_len, tvbuf(offset, 4))
         offset = offset + 4
+        remaining = remaining - 4
 
-        if version_len > 0 and payload_len >= offset - (1 + username_len + 1 + password_len + 4) + version_len then
-            local version = buffer(offset, version_len):string()
-            tree:add(f_login_version, buffer(offset, version_len))
+        if version_len > 0 and remaining >= version_len then
+            local version = tvbuf(offset, version_len):string()
+            tree:add(pf_login_version, tvbuf(offset, version_len))
             offset = offset + version_len
+            remaining = remaining - version_len
         end
 
         -- Context (optional)
-        if payload_len >= offset - (1 + username_len + 1 + password_len + 4 + version_len) + 4 then
-            local context_len = buffer(offset, 4):le_uint()
-            tree:add_le(f_login_context_len, buffer(offset, 4))
+        if remaining >= 4 then
+            local context_len = tvbuf(offset, 4):le_uint()
+            tree:add_le(pf_login_context_len, tvbuf(offset, 4))
             offset = offset + 4
+            remaining = remaining - 4
 
-            if context_len > 0 and payload_len >= offset - (1 + username_len + 1 + password_len + 4 + version_len + 4) + context_len then
-                local context = buffer(offset, context_len):string()
-                tree:add(f_login_context, buffer(offset, context_len))
+            if context_len > 0 and remaining >= context_len then
+                local context = tvbuf(offset, context_len):string()
+                tree:add(pf_login_context, tvbuf(offset, context_len))
             end
         end
     end
 
-    pinfo.cols.info:append(string.format(" (User: %s)", username))
+    return username
 end
 
--- Command handlers table
-local command_handlers = {
-    [1] = {  -- Ping
-        name = "Ping",
-        parse_payload = function(buffer, pinfo, tree, offset)
-            -- No payload for Ping
-        end
-    },
-    [10] = {  -- GetStats
-        name = "GetStats",
-        parse_payload = function(buffer, pinfo, tree, offset)
-            -- No payload for GetStats
-        end
-    },
-    [38] = {  -- LoginUser
-        name = "LoginUser",
-        parse_payload = parse_login_user_payload
-    },
-}
-
--- Parse Request message
-local function parse_request(buffer, pinfo, tree)
-    if buffer:len() < 8 then
-        return false
-    end
-
-    local length = buffer(0, 4):le_uint()
-    local code = buffer(4, 4):le_uint()
-
-    tree:add(f_msg_type, "Request")
-    tree:add_le(f_req_length, buffer(0, 4))
-    tree:add_le(f_req_code, buffer(4, 4))
-
-    local code_name = command_names[code] or "Unknown"
-    tree:add(f_req_code_name, code_name)
-
-    pinfo.cols.info = string.format("Request: %s (Code: %d)", code_name, code)
-
-    -- Parse payload if present
-    if length > 4 then
-        local payload_len = length - 4
-        if buffer:len() >= 8 + payload_len then
-            local payload_tree = tree:add(f_req_payload, buffer(8, payload_len))
-
-            -- Use command-specific parser if available
-            local handler = command_handlers[code]
-            if handler and handler.parse_payload then
-                handler.parse_payload(buffer, pinfo, payload_tree, 8)
-            end
-        end
-    end
-
-    return true
-end
-
--- Parse Response message
-local function parse_response(buffer, pinfo, tree)
-    if buffer:len() < 8 then
-        return false
-    end
-
-    local status = buffer(0, 4):le_uint()
-    local length = buffer(4, 4):le_uint()
-
-    tree:add(f_msg_type, "Response")
-    tree:add_le(f_resp_status, buffer(0, 4))
-
-    local status_name = error_names[status] or "Unknown"
-    tree:add(f_resp_status_name, status_name)
-    tree:add_le(f_resp_length, buffer(4, 4))
-
-    pinfo.cols.info = string.format("Response: %s (Status: %d)", status_name, status)
-
-    -- Parse payload if present (length includes status bytes)
-    if length > 4 and status == 0 then
-        local payload_len = length - 4
-        if buffer:len() >= 8 + payload_len then
-            tree:add(f_resp_payload, buffer(8, payload_len))
-        end
-    end
-
-    return true
-end
-
+----------------------------------------
 -- Main dissector function
-function iggy_proto.dissector(buffer, pinfo, tree)
-    local length = buffer:len()
-    if length < 8 then
+function iggy_proto.dissector(tvbuf, pktinfo, root)
+    local pktlen = tvbuf:reported_length_remaining()
+
+    -- Set protocol column
+    pktinfo.cols.protocol:set("Iggy")
+
+    -- Add protocol tree
+    local tree = root:add(iggy_proto, tvbuf:range(0, pktlen))
+
+    -- Check minimum length
+    if pktlen < IGGY_MIN_LEN then
+        tree:add_proto_expert_info(ef_too_short)
         return 0
     end
 
-    pinfo.cols.protocol = iggy_proto.name
+    local first_u32 = tvbuf(0, 4):le_uint()
+    local second_u32 = tvbuf(4, 4):le_uint()
 
-    local subtree = tree:add(iggy_proto, buffer(), "Iggy Protocol")
+    -- Determine if Request or Response
+    local is_request = command_names[second_u32] ~= nil
 
-    -- Try to determine if it's a request or response
-    -- Heuristic: First u32 is "length" in request, or "status" in response
-    -- If first u32 is small (< 1000) and second u32 is also small, likely response
-    -- If first u32 is larger, likely request (length field)
+    if is_request then
+        -- Parse Request
+        local length = first_u32
+        local code = second_u32
+        local code_name = command_names[code] or "Unknown"
 
-    local first_u32 = buffer(0, 4):le_uint()
-    local second_u32 = buffer(4, 4):le_uint()
+        tree:add(pf_msg_type, "Request")
+        tree:add_le(pf_req_length, tvbuf(0, 4))
+        tree:add_le(pf_req_code, tvbuf(4, 4))
+        tree:add(pf_req_code_name, code_name)
 
-    -- Simple heuristic: if second_u32 is a known command code, it's a request
-    if command_names[second_u32] then
-        return parse_request(buffer, pinfo, subtree) and length or 0
+        -- Add expert info
+        tree:add_proto_expert_info(ef_request, "Request: " .. code_name)
+
+        -- Set info column
+        pktinfo.cols.info:set(string.format("Request: %s (Code: %d)", code_name, code))
+
+        -- Validate length
+        local expected_len = 4 + length
+        if expected_len ~= pktlen then
+            tree:add_proto_expert_info(ef_invalid_length,
+                string.format("Length mismatch: expected %d, got %d", expected_len, pktlen))
+        end
+
+        -- Parse payload
+        if length > 4 then
+            local payload_len = length - 4
+            if pktlen >= 8 + payload_len then
+                local payload_tree = tree:add(pf_req_payload, tvbuf(8, payload_len))
+
+                -- Parse specific command payloads
+                if code == 38 then  -- LoginUser
+                    local username = parse_login_user_payload(tvbuf, payload_tree, 8)
+                    if username then
+                        pktinfo.cols.info:append(string.format(" (User: %s)", username))
+                    end
+                end
+            end
+        end
+
     else
-        -- Otherwise, try parsing as response
-        return parse_response(buffer, pinfo, subtree) and length or 0
+        -- Parse Response
+        local status = first_u32
+        local length = second_u32
+        local status_name = status_names[status] or string.format("Unknown (%d)", status)
+
+        tree:add(pf_msg_type, "Response")
+        tree:add_le(pf_resp_status, tvbuf(0, 4))
+        tree:add(pf_resp_status_name, status_name)
+        tree:add_le(pf_resp_length, tvbuf(4, 4))
+
+        -- Add expert info
+        tree:add_proto_expert_info(ef_response, "Response: " .. status_name)
+
+        -- Set info column
+        pktinfo.cols.info:set(string.format("Response: %s (Status: %d)", status_name, status))
+
+        -- Validate length
+        local payload_len = length > 4 and (length - 4) or 0
+        local expected_len = 8 + payload_len
+        if length > 0 and expected_len ~= pktlen then
+            tree:add_proto_expert_info(ef_invalid_length,
+                string.format("Length mismatch: expected %d, got %d", expected_len, pktlen))
+        end
+
+        -- Parse payload (only for successful responses)
+        if status == 0 and length > 4 then
+            if pktlen >= 8 + payload_len then
+                tree:add(pf_resp_payload, tvbuf(8, payload_len))
+            end
+        end
     end
+
+    return pktlen
 end
 
--- Heuristic function to detect Iggy protocol
-function heuristic_checker(buffer, pinfo, tree)
-    local length = buffer:len()
+----------------------------------------
+-- Heuristic dissector function
+local function heur_dissect_iggy(tvbuf, pktinfo, root)
+    local pktlen = tvbuf:len()
 
-    -- Need at least 8 bytes for basic header
-    if length < 8 then
+    -- Check minimum length
+    if pktlen < IGGY_MIN_LEN then
         return false
     end
 
-    local first_u32 = buffer(0, 4):le_uint()
-    local second_u32 = buffer(4, 4):le_uint()
+    local first_u32 = tvbuf(0, 4):le_uint()
+    local second_u32 = tvbuf(4, 4):le_uint()
 
     -- Check if it's a Request
-    -- Request format: length(4) + code(4) + payload
-    -- Validate: second_u32 is a known command code
     if command_names[second_u32] then
-        -- Verify length field makes sense
-        -- length should be: code(4) + payload
-        -- Total packet should be: length_field(4) + length
+        -- Verify length field
         local expected_total = 4 + first_u32
-        if expected_total == length then
-            iggy_proto.dissector(buffer, pinfo, tree)
+        if expected_total == pktlen then
+            iggy_proto.dissector(tvbuf, pktinfo, root)
+            pktinfo.conversation = iggy_proto
             return true
         end
     end
 
     -- Check if it's a Response
-    -- Response format: status(4) + length(4) + payload
-    -- Validate: first_u32 (status) is reasonable (0-100)
-    -- and length field makes sense
+    -- Status codes should be reasonable (0-100 for common errors)
     if first_u32 <= 100 then
-        -- length should be: status(4) + payload
-        -- Total packet should be: status(4) + length_field(4) + (length - 4)
-        local payload_len = second_u32 > 4 and (second_u32 - 4) or 0
-        local expected_total = 8 + payload_len
+        local length = second_u32
 
-        if expected_total == length or second_u32 == 0 then
-            iggy_proto.dissector(buffer, pinfo, tree)
-            return true
+        -- For error responses (status != 0), length is usually 0
+        if first_u32 ~= 0 and length == 0 then
+            if pktlen == 8 then
+                iggy_proto.dissector(tvbuf, pktinfo, root)
+                pktinfo.conversation = iggy_proto
+                return true
+            end
+        end
+
+        -- For success responses
+        if first_u32 == 0 then
+            local payload_len = length > 4 and (length - 4) or 0
+            local expected_total = 8 + payload_len
+
+            if expected_total == pktlen or length == 0 then
+                iggy_proto.dissector(tvbuf, pktinfo, root)
+                pktinfo.conversation = iggy_proto
+                return true
+            end
         end
     end
 
     return false
 end
 
+----------------------------------------
 -- Register heuristic dissector for TCP
-iggy_proto:register_heuristic("tcp", heuristic_checker)
+iggy_proto:register_heuristic("tcp", heur_dissect_iggy)
+
+-- Protocol is automatically registered when script finishes loading
