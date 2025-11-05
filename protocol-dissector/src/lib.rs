@@ -313,7 +313,7 @@ mod tests {
             .expect("Failed to get command name");
         assert_eq!(command_name, "LoginUser", "Command name should be 'LoginUser'");
 
-        let username = iggy_layer["iggy.login.username"]
+        let username = iggy_layer["iggy.request.payload_tree"]["iggy.login.username"]
             .as_str()
             .expect("Failed to get username");
         assert_eq!(username, "testuser", "Username should be 'testuser'");
