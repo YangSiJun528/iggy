@@ -6311,6 +6311,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "protocol-dissector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "hex",
+ "iggy_common",
+ "serde_json",
+ "server",
+ "tokio",
+]
+
+[[package]]
 name = "protox"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

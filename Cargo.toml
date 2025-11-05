@@ -39,7 +39,7 @@ members = [
     "core/sdk",
     "core/server",
     "core/tools",
-    "examples/rust",
+    "examples/rust", "protocol-dissector",
 ]
 exclude = ["foreign/python"]
 resolver = "2"

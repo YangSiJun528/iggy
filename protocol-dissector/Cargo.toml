@@ -1,0 +1,13 @@
+[package]
+name = "protocol-dissector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = { workspace = true }
+iggy_common = { path = "../core/common" }
+server = { path = "../core/server" }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+hex = "0.4"
