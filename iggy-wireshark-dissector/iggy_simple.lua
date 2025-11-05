@@ -96,11 +96,5 @@ local function iggy_heuristic(buffer, pinfo, tree)
 end
 
 -- Register heuristic dissector for TCP
+-- This allows the dissector to work on any port by inspecting packet content
 iggy_proto:register_heuristic("tcp", iggy_heuristic)
-
--- Also register on specific ports for completeness
--- 이거 하면 안되고 전체 다 거는게 안전할거 같은디
-local tcp_port = DissectorTable.get("tcp.port")
-tcp_port:add(8090, iggy_proto)
-tcp_port:add(8091, iggy_proto)
-tcp_port:add(8092, iggy_proto)
