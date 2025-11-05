@@ -1,100 +1,225 @@
--- Iggy Protocol Dissector (Simple Version - Ping & GetStats only)
--- This is a simple test dissector for learning and testing purposes
+-- Iggy Protocol Dissector
+-- Supports Request/Response detection with extensible command registry
 
-local iggy_proto = Proto("iggy", "Iggy Protocol")
+local iggy = Proto("iggy", "Iggy Protocol")
 
+----------------------------------------
 -- Protocol fields
-local f_length = ProtoField.uint32("iggy.length", "Length", base.DEC)
-local f_code = ProtoField.uint32("iggy.code", "Command Code", base.DEC)
-local f_code_name = ProtoField.string("iggy.code_name", "Command Name", base.ASCII)
+----------------------------------------
+-- Common
+local pf_message_type   = ProtoField.string("iggy.message_type", "Message Type")
 
-iggy_proto.fields = { f_length, f_code, f_code_name }
+-- Request fields
+local pf_req_length     = ProtoField.uint32("iggy.request.length", "Length", base.DEC)
+local pf_req_code       = ProtoField.uint32("iggy.request.code", "Command Code", base.DEC)
+local pf_req_code_name  = ProtoField.string("iggy.request.code_name", "Command Name")
+local pf_req_payload    = ProtoField.bytes("iggy.request.payload", "Payload")
 
--- Command codes
-local COMMAND_CODES = {
-    [1] = "Ping",
-    [10] = "GetStats"
+-- Response fields
+local pf_resp_status    = ProtoField.uint32("iggy.response.status", "Status", base.DEC)
+local pf_resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name")
+local pf_resp_length    = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
+local pf_resp_payload   = ProtoField.bytes("iggy.response.payload", "Payload")
+
+iggy.fields = {
+    pf_message_type,
+    pf_req_length, pf_req_code, pf_req_code_name, pf_req_payload,
+    pf_resp_status, pf_resp_status_name, pf_resp_length, pf_resp_payload
 }
 
--- Dissector function
-function iggy_proto.dissector(buffer, pinfo, tree)
-    local length = buffer:len()
-    if length == 0 then return end
+----------------------------------------
+-- Command code registry (extensible)
+----------------------------------------
+local request_codes = {
+    [1] = "Ping",
+    [11] = "GetMe",
+}
 
-    pinfo.cols.protocol = iggy_proto.name
+-- Status code mappings
+local status_codes = {
+    [0] = "OK",
+    [1] = "Error",
+    -- Add more status codes as needed
+}
 
-    local subtree = tree:add(iggy_proto, buffer(), "Iggy Protocol Data")
+----------------------------------------
+-- Expert info
+----------------------------------------
+local ef_too_short      = ProtoExpert.new("iggy.too_short.expert",
+                                          "Iggy packet too short",
+                                          expert.group.MALFORMED, expert.severity.ERROR)
+local ef_invalid_length = ProtoExpert.new("iggy.invalid_length.expert",
+                                          "Invalid length field",
+                                          expert.group.MALFORMED, expert.severity.WARN)
+local ef_error_status   = ProtoExpert.new("iggy.error_status.expert",
+                                          "Error response",
+                                          expert.group.RESPONSE_CODE, expert.severity.WARN)
 
-    -- Parse LENGTH field (4 bytes, little-endian)
-    if length < 4 then
-        subtree:add_expert_info(PI_MALFORMED, PI_ERROR, "Packet too short for LENGTH field")
-        return
+iggy.experts = { ef_too_short, ef_invalid_length, ef_error_status }
+
+----------------------------------------
+-- Helper: Detect if packet is request or response
+----------------------------------------
+local function detect_message_type(tvbuf)
+    if tvbuf:len() < 8 then
+        return nil
     end
-    local msg_length = buffer(0, 4):le_uint()
-    subtree:add_le(f_length, buffer(0, 4))
 
-    -- Parse CODE field (4 bytes, little-endian)
-    if length < 8 then
-        subtree:add_expert_info(PI_MALFORMED, PI_ERROR, "Packet too short for CODE field")
-        return
+    -- Try to parse as request first
+    local first_field = tvbuf:range(0, 4):le_uint()
+    local second_field = tvbuf:range(4, 4):le_uint()
+
+    -- Heuristic: If first field looks like reasonable length
+    -- and second field is a known request code, it's likely a request
+    if first_field >= 4 and first_field <= 1000000 then
+        if request_codes[second_field] then
+            return "request"
+        end
     end
-    local command_code = buffer(4, 4):le_uint()
-    subtree:add_le(f_code, buffer(4, 4))
 
-    -- Add command name
-    local command_name = COMMAND_CODES[command_code] or "Unknown"
-    subtree:add(f_code_name, command_name)
+    -- Heuristic: If first field is small (status code 0-100)
+    -- it's likely a response
+    if first_field <= 100 then
+        return "response"
+    end
+
+    return nil
+end
+
+----------------------------------------
+-- Request dissector
+----------------------------------------
+local function dissect_request(tvbuf, pktinfo, tree)
+    local pktlen = tvbuf:len()
+
+    if pktlen < 8 then
+        tree:add_proto_expert_info(ef_too_short)
+        return 0
+    end
+
+    local subtree = tree:add(iggy, tvbuf:range(0, pktlen), "Iggy Request")
+    subtree:add(pf_message_type, "Request"):set_generated()
+
+    -- LENGTH field
+    local msg_length = tvbuf:range(0, 4):le_uint()
+    subtree:add_le(pf_req_length, tvbuf:range(0, 4))
+
+    -- CODE field
+    local command_code = tvbuf:range(4, 4):le_uint()
+    subtree:add_le(pf_req_code, tvbuf:range(4, 4))
+
+    -- Command name
+    local command_name = request_codes[command_code] or string.format("Unknown(0x%x)", command_code)
+    subtree:add(pf_req_code_name, command_name):set_generated()
+
+    -- PAYLOAD
+    local payload_len = pktlen - 8
+    if payload_len > 0 then
+        subtree:add(pf_req_payload, tvbuf:range(8, payload_len))
+    end
 
     -- Update info column
-    pinfo.cols.info = string.format("Command: %s (code=%d, length=%d)",
-                                    command_name, command_code, msg_length)
+    pktinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)",
+                                        command_name, command_code, msg_length))
 
-    -- Validate: for Ping and GetStats, payload should be empty
-    if command_code == 1 or command_code == 10 then
-        if msg_length ~= 4 then
-            subtree:add_expert_info(PI_PROTOCOL, PI_WARN,
-                string.format("%s should have empty payload (length=4), but got length=%d",
-                              command_name, msg_length))
-        end
-
-        if length > 8 then
-            subtree:add_expert_info(PI_PROTOCOL, PI_WARN,
-                string.format("%s has unexpected extra data after header", command_name))
-        end
+    -- Validate length
+    local expected_length = 4 + payload_len
+    if msg_length ~= expected_length then
+        subtree:add_proto_expert_info(ef_invalid_length,
+            string.format("Length mismatch: field=%d, expected=%d", msg_length, expected_length))
     end
 
-    return length
+    return pktlen
 end
 
--- Heuristic function to detect Iggy protocol
-local function iggy_heuristic(buffer, pinfo, tree)
-    local length = buffer:len()
+----------------------------------------
+-- Response dissector
+----------------------------------------
+local function dissect_response(tvbuf, pktinfo, tree)
+    local pktlen = tvbuf:len()
 
-    -- Need at least 8 bytes for LENGTH + CODE
-    if length < 8 then
+    if pktlen < 8 then
+        tree:add_proto_expert_info(ef_too_short)
+        return 0
+    end
+
+    local subtree = tree:add(iggy, tvbuf:range(0, pktlen), "Iggy Response")
+    subtree:add(pf_message_type, "Response"):set_generated()
+
+    -- STATUS field
+    local status = tvbuf:range(0, 4):le_uint()
+    subtree:add_le(pf_resp_status, tvbuf:range(0, 4))
+
+    -- Status name
+    local status_name = status_codes[status] or (status == 0 and "OK" or "Error")
+    subtree:add(pf_resp_status_name, status_name):set_generated()
+
+    -- LENGTH field
+    local msg_length = tvbuf:range(4, 4):le_uint()
+    subtree:add_le(pf_resp_length, tvbuf:range(4, 4))
+
+    -- PAYLOAD
+    local payload_len = pktlen - 8
+    if payload_len > 0 then
+        subtree:add(pf_resp_payload, tvbuf:range(8, payload_len))
+    end
+
+    -- Update info column
+    if status == 0 then
+        pktinfo.cols.info:set(string.format("Response: OK (length=%d)", msg_length))
+    else
+        pktinfo.cols.info:set(string.format("Response: Error (status=%d, length=%d)",
+                                            status, msg_length))
+        subtree:add_proto_expert_info(ef_error_status,
+            string.format("Error status: %d", status))
+    end
+
+    -- Validate: error responses should have length=0
+    if status ~= 0 and msg_length ~= 0 then
+        subtree:add_proto_expert_info(ef_invalid_length,
+            "Error response should have length=0")
+    end
+
+    return pktlen
+end
+
+----------------------------------------
+-- Main dissector
+----------------------------------------
+function iggy.dissector(tvbuf, pktinfo, root)
+    pktinfo.cols.protocol:set("IGGY")
+
+    local msg_type = detect_message_type(tvbuf)
+
+    if msg_type == "request" then
+        return dissect_request(tvbuf, pktinfo, root)
+    elseif msg_type == "response" then
+        return dissect_response(tvbuf, pktinfo, root)
+    else
+        local tree = root:add(iggy, tvbuf(), "Iggy Protocol (Unknown)")
+        tree:add_proto_expert_info(ef_too_short, "Cannot determine message type")
+        return 0
+    end
+end
+
+----------------------------------------
+-- Heuristic dissector
+----------------------------------------
+local function heur_dissect_iggy(tvbuf, pktinfo, root)
+    if tvbuf:len() < 8 then
         return false
     end
 
-    -- Check if it looks like an Iggy packet
-    local msg_length = buffer(0, 4):le_uint()
-    local command_code = buffer(4, 4):le_uint()
+    local msg_type = detect_message_type(tvbuf)
 
-    -- Basic sanity checks
-    -- LENGTH should be reasonable (4 bytes for code + payload)
-    if msg_length < 4 or msg_length > 1000000 then
+    if not msg_type then
         return false
     end
 
-    -- For our simple test, check if CODE is 1 (Ping) or 10 (GetStats)
-    if command_code == 1 or command_code == 10 then
-        -- Call the actual dissector
-        iggy_proto.dissector(buffer, pinfo, tree)
-        return true
-    end
+    iggy.dissector(tvbuf, pktinfo, root)
+    pktinfo.conversation = iggy
 
-    return false
+    return true
 end
 
--- Register heuristic dissector for TCP
--- This allows the dissector to work on any port by inspecting packet content
-iggy_proto:register_heuristic("tcp", iggy_heuristic)
+iggy:register_heuristic("tcp", heur_dissect_iggy)

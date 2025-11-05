@@ -93,11 +93,6 @@ impl TsharkCapture {
 
         let json_str = String::from_utf8(output.stdout)?;
 
-        // Debug: print JSON
-        // println!("=== JSON output ===");
-        // println!("{}", json_str);
-        // println!("=== end ===");
-
         let packets: Vec<Value> = serde_json::from_str(&json_str)?;
 
         // Debug: print iggy layer structure
@@ -128,10 +123,8 @@ async fn run_dummy_server(port: u16) -> anyhow::Result<()> {
             let mut buf = vec![0u8; 1024];
             loop {
                 match socket.try_read(&mut buf) {
-                    Ok(0) => break, // Connection closed
-                    Ok(_n) => {
-                        // Just discard the data
-                    }
+                    Ok(0) => break,
+                    Ok(_n) => {}
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
@@ -143,24 +136,20 @@ async fn run_dummy_server(port: u16) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[ignore] // Requires tshark to be installed
+#[ignore]
 async fn test_ping_dissection_with_tshark() {
     let port = 8091;
 
-    // 1. Setup tshark capture
     let capture = TsharkCapture::new(port).expect("Failed to create capture");
     let mut tshark = capture.start_capture(port).expect("Failed to start tshark");
 
-    // Wait for tshark to initialize
     sleep(Duration::from_secs(1)).await;
 
-    // 2. Start dummy server
     tokio::spawn(async move {
         let _ = run_dummy_server(port).await;
     });
     sleep(Duration::from_millis(500)).await;
 
-    // 3. Connect and send PING packet
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .expect("Failed to connect");
@@ -177,27 +166,15 @@ async fn test_ping_dissection_with_tshark() {
         .expect("Failed to send packet");
     stream.flush().await.expect("Failed to flush");
 
-    // Give time for packets to be captured
     sleep(Duration::from_secs(1)).await;
 
-    // 4. Stop tshark
     let _ = tshark.kill();
     sleep(Duration::from_millis(500)).await;
 
-    // 5. Analyze captured packets
     let packets = capture.analyze().expect("Failed to analyze packets");
 
     assert!(!packets.is_empty(), "No packets captured");
 
-    // Debug: print all packets
-    for (i, packet) in packets.iter().enumerate() {
-        println!("Packet {}: has iggy = {}", i, packet["_source"]["layers"].get("iggy").is_some());
-        if let Some(iggy) = packet["_source"]["layers"].get("iggy") {
-            println!("Iggy layer: {}", serde_json::to_string_pretty(iggy).unwrap());
-        }
-    }
-
-    // Find the packet with Iggy protocol
     let iggy_packet = packets
         .iter()
         .find(|p| p["_source"]["layers"].get("iggy").is_some())
@@ -206,22 +183,28 @@ async fn test_ping_dissection_with_tshark() {
     let layers = &iggy_packet["_source"]["layers"];
     let iggy_layer = &layers["iggy"];
 
-    // Verify LENGTH field
-    let length = iggy_layer["iggy.length"]
+    // Verify message type is Request
+    let msg_type = iggy_layer["iggy.message_type"]
+        .as_str()
+        .expect("Failed to get message type");
+    assert_eq!(msg_type, "Request", "Message type should be 'Request'");
+
+    // Verify LENGTH field (request.length)
+    let length = iggy_layer["iggy.request.length"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
         .expect("Failed to parse LENGTH field");
     assert_eq!(length, 4, "LENGTH field should be 4 for PING");
 
-    // Verify CODE field
-    let code = iggy_layer["iggy.code"]
+    // Verify CODE field (request.code)
+    let code = iggy_layer["iggy.request.code"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
         .expect("Failed to parse CODE field");
     assert_eq!(code, 1, "CODE field should be 1 for PING");
 
-    // Verify command name
-    let command_name = iggy_layer["iggy.code_name"]
+    // Verify command name (request.code_name)
+    let command_name = iggy_layer["iggy.request.code_name"]
         .as_str()
         .expect("Failed to get command name");
     assert_eq!(command_name, "Ping", "Command name should be 'Ping'");
@@ -230,23 +213,20 @@ async fn test_ping_dissection_with_tshark() {
 }
 
 #[tokio::test]
-#[ignore] // Requires tshark to be installed
+#[ignore]
 async fn test_get_stats_dissection_with_tshark() {
     let port = 8092;
 
-    // 1. Setup tshark capture
     let capture = TsharkCapture::new(port).expect("Failed to create capture");
     let mut tshark = capture.start_capture(port).expect("Failed to start tshark");
 
     sleep(Duration::from_secs(1)).await;
 
-    // 2. Start dummy server
     tokio::spawn(async move {
         let _ = run_dummy_server(port).await;
     });
     sleep(Duration::from_millis(500)).await;
 
-    // 3. Connect and send GET_STATS packet
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .expect("Failed to connect");
@@ -265,11 +245,9 @@ async fn test_get_stats_dissection_with_tshark() {
 
     sleep(Duration::from_secs(1)).await;
 
-    // 4. Stop tshark
     let _ = tshark.kill();
     sleep(Duration::from_millis(500)).await;
 
-    // 5. Analyze captured packets
     let packets = capture.analyze().expect("Failed to analyze packets");
 
     assert!(!packets.is_empty(), "No packets captured");
@@ -282,19 +260,24 @@ async fn test_get_stats_dissection_with_tshark() {
     let layers = &iggy_packet["_source"]["layers"];
     let iggy_layer = &layers["iggy"];
 
-    let length = iggy_layer["iggy.length"]
+    let msg_type = iggy_layer["iggy.message_type"]
+        .as_str()
+        .expect("Failed to get message type");
+    assert_eq!(msg_type, "Request", "Message type should be 'Request'");
+
+    let length = iggy_layer["iggy.request.length"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
         .expect("Failed to parse LENGTH field");
     assert_eq!(length, 4, "LENGTH field should be 4 for GET_STATS");
 
-    let code = iggy_layer["iggy.code"]
+    let code = iggy_layer["iggy.request.code"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
         .expect("Failed to parse CODE field");
     assert_eq!(code, 10, "CODE field should be 10 for GET_STATS");
 
-    let command_name = iggy_layer["iggy.code_name"]
+    let command_name = iggy_layer["iggy.request.code_name"]
         .as_str()
         .expect("Failed to get command name");
     assert_eq!(
