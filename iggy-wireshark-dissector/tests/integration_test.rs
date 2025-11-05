@@ -1,5 +1,6 @@
 use bytes::{BufMut, BytesMut};
 use iggy_common::get_stats::GetStats;
+use iggy_common::login_user::LoginUser;
 use iggy_common::ping::Ping;
 use serde_json::Value;
 use server::binary::command::ServerCommand;
@@ -286,4 +287,134 @@ async fn test_get_stats_dissection_with_tshark() {
     );
 
     println!("✓ GET_STATS dissection verified successfully!");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_login_user_dissection_with_tshark() {
+    let port = 8093;
+
+    let capture = TsharkCapture::new(port).expect("Failed to create capture");
+    let mut tshark = capture.start_capture(port).expect("Failed to start tshark");
+
+    sleep(Duration::from_secs(1)).await;
+
+    tokio::spawn(async move {
+        let _ = run_dummy_server(port).await;
+    });
+    sleep(Duration::from_millis(500)).await;
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .expect("Failed to connect");
+
+    let login_command = ServerCommand::LoginUser(LoginUser {
+        username: "testuser".to_string(),
+        password: "testpass".to_string(),
+        version: Some("1.0.0".to_string()),
+        context: Some("test-context".to_string()),
+    });
+    let login_packet = create_packet_from_server_command(&login_command);
+
+    println!("Sending LOGIN_USER via ServerCommand: {} bytes", login_packet.len());
+    println!("  Hex: {}", hex::encode(&login_packet));
+
+    stream
+        .write_all(&login_packet)
+        .await
+        .expect("Failed to send packet");
+    stream.flush().await.expect("Failed to flush");
+
+    sleep(Duration::from_secs(1)).await;
+
+    let _ = tshark.kill();
+    sleep(Duration::from_millis(500)).await;
+
+    let packets = capture.analyze().expect("Failed to analyze packets");
+
+    assert!(!packets.is_empty(), "No packets captured");
+
+    let iggy_packet = packets
+        .iter()
+        .find(|p| p["_source"]["layers"].get("iggy").is_some())
+        .expect("No Iggy packet found");
+
+    let layers = &iggy_packet["_source"]["layers"];
+    let iggy_layer = &layers["iggy"];
+
+    // Verify message type is Request
+    let msg_type = iggy_layer["iggy.message_type"]
+        .as_str()
+        .expect("Failed to get message type");
+    assert_eq!(msg_type, "Request", "Message type should be 'Request'");
+
+    // Verify CODE field (request.code)
+    let code = iggy_layer["iggy.request.code"]
+        .as_str()
+        .and_then(|s| s.parse::<u32>().ok())
+        .expect("Failed to parse CODE field");
+    assert_eq!(code, 38, "CODE field should be 38 for LOGIN_USER");
+
+    // Verify command name (request.code_name)
+    let command_name = iggy_layer["iggy.request.code_name"]
+        .as_str()
+        .expect("Failed to get command name");
+    assert_eq!(command_name, "LoginUser", "Command name should be 'LoginUser'");
+
+    // Access payload_tree for LoginUser-specific fields
+    let payload_tree = &iggy_layer["iggy.request.payload_tree"];
+
+    // Verify username
+    let username = payload_tree["iggy.login.username"]
+        .as_str()
+        .expect("Failed to get username");
+    assert_eq!(username, "testuser", "Username should be 'testuser'");
+
+    // Verify username length
+    let username_len = payload_tree["iggy.login.username_len"]
+        .as_str()
+        .and_then(|s| s.parse::<u8>().ok())
+        .expect("Failed to parse username length");
+    assert_eq!(username_len, 8, "Username length should be 8");
+
+    // Verify password
+    let password = payload_tree["iggy.login.password"]
+        .as_str()
+        .expect("Failed to get password");
+    assert_eq!(password, "testpass", "Password should be 'testpass'");
+
+    // Verify password length
+    let password_len = payload_tree["iggy.login.password_len"]
+        .as_str()
+        .and_then(|s| s.parse::<u8>().ok())
+        .expect("Failed to parse password length");
+    assert_eq!(password_len, 8, "Password length should be 8");
+
+    // Verify version
+    let version = payload_tree["iggy.login.version"]
+        .as_str()
+        .expect("Failed to get version");
+    assert_eq!(version, "1.0.0", "Version should be '1.0.0'");
+
+    // Verify version length
+    let version_len = payload_tree["iggy.login.version_len"]
+        .as_str()
+        .and_then(|s| s.parse::<u32>().ok())
+        .expect("Failed to parse version length");
+    assert_eq!(version_len, 5, "Version length should be 5");
+
+    // Verify context
+    let context = payload_tree["iggy.login.context"]
+        .as_str()
+        .expect("Failed to get context");
+    assert_eq!(context, "test-context", "Context should be 'test-context'");
+
+    // Verify context length
+    let context_len = payload_tree["iggy.login.context_len"]
+        .as_str()
+        .and_then(|s| s.parse::<u32>().ok())
+        .expect("Failed to parse context length");
+    assert_eq!(context_len, 12, "Context length should be 12");
+
+    println!("✓ LOGIN_USER dissection verified successfully!");
 }

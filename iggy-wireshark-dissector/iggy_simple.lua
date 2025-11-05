@@ -21,10 +21,24 @@ local pf_resp_status_name = ProtoField.string("iggy.response.status_name", "Stat
 local pf_resp_length    = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
 local pf_resp_payload   = ProtoField.bytes("iggy.response.payload", "Payload")
 
+-- LoginUser payload fields
+local pf_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
+local pf_login_username     = ProtoField.string("iggy.login.username", "Username")
+local pf_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
+local pf_login_password     = ProtoField.string("iggy.login.password", "Password")
+local pf_login_version_len  = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC)
+local pf_login_version      = ProtoField.string("iggy.login.version", "Version")
+local pf_login_context_len  = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
+local pf_login_context      = ProtoField.string("iggy.login.context", "Context")
+
 iggy.fields = {
     pf_message_type,
     pf_req_length, pf_req_code, pf_req_code_name, pf_req_payload,
-    pf_resp_status, pf_resp_status_name, pf_resp_length, pf_resp_payload
+    pf_resp_status, pf_resp_status_name, pf_resp_length, pf_resp_payload,
+    pf_login_username_len, pf_login_username,
+    pf_login_password_len, pf_login_password,
+    pf_login_version_len, pf_login_version,
+    pf_login_context_len, pf_login_context
 }
 
 ----------------------------------------
@@ -33,6 +47,7 @@ iggy.fields = {
 local request_codes = {
     [1] = "Ping",
     [11] = "GetMe",
+    [38] = "LoginUser",
 }
 
 -- Status code mappings
@@ -87,6 +102,67 @@ local function detect_message_type(tvbuf)
 end
 
 ----------------------------------------
+-- Command-specific payload dissectors
+----------------------------------------
+local function dissect_login_user_payload(tvbuf, payload_tree, offset, payload_len)
+    local pktlen = offset + payload_len
+
+    -- Username
+    if offset < pktlen then
+        local username_len = tvbuf:range(offset, 1):uint()
+        payload_tree:add(pf_login_username_len, tvbuf:range(offset, 1))
+        offset = offset + 1
+
+        if username_len > 0 and offset + username_len <= pktlen then
+            payload_tree:add(pf_login_username, tvbuf:range(offset, username_len))
+            offset = offset + username_len
+        end
+    end
+
+    -- Password
+    if offset < pktlen then
+        local password_len = tvbuf:range(offset, 1):uint()
+        payload_tree:add(pf_login_password_len, tvbuf:range(offset, 1))
+        offset = offset + 1
+
+        if password_len > 0 and offset + password_len <= pktlen then
+            payload_tree:add(pf_login_password, tvbuf:range(offset, password_len))
+            offset = offset + password_len
+        end
+    end
+
+    -- Version
+    if offset + 4 <= pktlen then
+        local version_len = tvbuf:range(offset, 4):le_uint()
+        payload_tree:add_le(pf_login_version_len, tvbuf:range(offset, 4))
+        offset = offset + 4
+
+        if version_len > 0 and offset + version_len <= pktlen then
+            payload_tree:add(pf_login_version, tvbuf:range(offset, version_len))
+            offset = offset + version_len
+        end
+    end
+
+    -- Context
+    if offset + 4 <= pktlen then
+        local context_len = tvbuf:range(offset, 4):le_uint()
+        payload_tree:add_le(pf_login_context_len, tvbuf:range(offset, 4))
+        offset = offset + 4
+
+        if context_len > 0 and offset + context_len <= pktlen then
+            payload_tree:add(pf_login_context, tvbuf:range(offset, context_len))
+            offset = offset + context_len
+        end
+    end
+end
+
+--- Payload dissector registry
+-- Maps command codes to their specific payload dissector functions
+local payload_dissectors = {
+    [38] = dissect_login_user_payload,
+}
+
+----------------------------------------
 -- Request dissector
 ----------------------------------------
 local function dissect_request(tvbuf, pktinfo, tree)
@@ -115,7 +191,13 @@ local function dissect_request(tvbuf, pktinfo, tree)
     -- PAYLOAD
     local payload_len = pktlen - 8
     if payload_len > 0 then
-        subtree:add(pf_req_payload, tvbuf:range(8, payload_len))
+        local payload_tree = subtree:add(pf_req_payload, tvbuf:range(8, payload_len))
+
+        -- Use command-specific payload dissector if available
+        local payload_dissector = payload_dissectors[command_code]
+        if payload_dissector then
+            payload_dissector(tvbuf, payload_tree, 8, payload_len)
+        end
     end
 
     -- Update info column
