@@ -52,7 +52,9 @@ Wireshark Lua 기반 Dissector로 iggy 프로토콜의 바이너리 통신(TCP/Q
    - Analyze > Reload Lua Plugins
    - 또는 `-X lua_script:iggy_dissector.lua` 옵션으로 시작
 
-3. TCP 포트 8090 또는 8091의 트래픽을 캡처하면 자동으로 Iggy 프로토콜이 파싱됩니다.
+3. Heuristic dissector로 동작하므로 TCP 트래픽을 캡처하면 자동으로 Iggy 프로토콜을 감지하고 파싱합니다.
+   - 포트 번호에 관계없이 패킷 내용을 분석하여 Iggy 프로토콜인지 판단
+   - 알려진 command code나 status code 패턴으로 자동 인식
 
 ### 테스트 실행
 

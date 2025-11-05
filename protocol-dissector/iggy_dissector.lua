@@ -248,7 +248,50 @@ function iggy_proto.dissector(buffer, pinfo, tree)
     end
 end
 
--- Register the dissector on TCP port (default: 8090)
-local tcp_port = DissectorTable.get("tcp.port")
-tcp_port:add(8090, iggy_proto)
-tcp_port:add(8091, iggy_proto)
+-- Heuristic function to detect Iggy protocol
+function heuristic_checker(buffer, pinfo, tree)
+    local length = buffer:len()
+
+    -- Need at least 8 bytes for basic header
+    if length < 8 then
+        return false
+    end
+
+    local first_u32 = buffer(0, 4):le_uint()
+    local second_u32 = buffer(4, 4):le_uint()
+
+    -- Check if it's a Request
+    -- Request format: length(4) + code(4) + payload
+    -- Validate: second_u32 is a known command code
+    if command_names[second_u32] then
+        -- Verify length field makes sense
+        -- length should be: code(4) + payload
+        -- Total packet should be: length_field(4) + length
+        local expected_total = 4 + first_u32
+        if expected_total == length then
+            iggy_proto.dissector(buffer, pinfo, tree)
+            return true
+        end
+    end
+
+    -- Check if it's a Response
+    -- Response format: status(4) + length(4) + payload
+    -- Validate: first_u32 (status) is reasonable (0-100)
+    -- and length field makes sense
+    if first_u32 <= 100 then
+        -- length should be: status(4) + payload
+        -- Total packet should be: status(4) + length_field(4) + (length - 4)
+        local payload_len = second_u32 > 4 and (second_u32 - 4) or 0
+        local expected_total = 8 + payload_len
+
+        if expected_total == length or second_u32 == 0 then
+            iggy_proto.dissector(buffer, pinfo, tree)
+            return true
+        end
+    end
+
+    return false
+end
+
+-- Register heuristic dissector for TCP
+iggy_proto:register_heuristic("tcp", heuristic_checker)
