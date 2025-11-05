@@ -4,6 +4,12 @@
 local iggy = Proto("iggy", "Iggy Protocol")
 
 ----------------------------------------
+-- Constants for TCP desegmentation
+----------------------------------------
+local DESEGMENT_ONE_MORE_SEGMENT = 0x0fffffff
+local IGGY_MIN_HEADER_LEN = 8  -- Minimum: LENGTH(4) + CODE/STATUS(4)
+
+----------------------------------------
 -- Protocol fields
 ----------------------------------------
 -- Common
@@ -168,16 +174,32 @@ local payload_dissectors = {
 local function dissect_request(tvbuf, pktinfo, tree)
     local pktlen = tvbuf:len()
 
-    if pktlen < 8 then
-        tree:add_proto_expert_info(ef_too_short)
-        return 0
+    -- Need at least 8 bytes to read LENGTH and CODE
+    if pktlen < IGGY_MIN_HEADER_LEN then
+        -- Request more data
+        pktinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+        pktinfo.desegment_offset = 0
+        return -DESEGMENT_ONE_MORE_SEGMENT
     end
 
-    local subtree = tree:add(iggy, tvbuf:range(0, pktlen), "Iggy Request")
+    -- Read LENGTH field (excluding itself)
+    local msg_length = tvbuf:range(0, 4):le_uint()
+
+    -- Total message size = LENGTH field (4 bytes) + msg_length
+    local total_len = 4 + msg_length
+
+    -- Check if we have the complete message
+    if pktlen < total_len then
+        -- Request more data
+        pktinfo.desegment_len = total_len - pktlen
+        pktinfo.desegment_offset = 0
+        return -DESEGMENT_ONE_MORE_SEGMENT
+    end
+
+    local subtree = tree:add(iggy, tvbuf:range(0, total_len), "Iggy Request")
     subtree:add(pf_message_type, "Request"):set_generated()
 
     -- LENGTH field
-    local msg_length = tvbuf:range(0, 4):le_uint()
     subtree:add_le(pf_req_length, tvbuf:range(0, 4))
 
     -- CODE field
@@ -189,7 +211,7 @@ local function dissect_request(tvbuf, pktinfo, tree)
     subtree:add(pf_req_code_name, command_name):set_generated()
 
     -- PAYLOAD
-    local payload_len = pktlen - 8
+    local payload_len = total_len - 8
     if payload_len > 0 then
         local payload_tree = subtree:add(pf_req_payload, tvbuf:range(8, payload_len))
 
@@ -211,7 +233,7 @@ local function dissect_request(tvbuf, pktinfo, tree)
             string.format("Length mismatch: field=%d, expected=%d", msg_length, expected_length))
     end
 
-    return pktlen
+    return total_len
 end
 
 ----------------------------------------
@@ -220,12 +242,29 @@ end
 local function dissect_response(tvbuf, pktinfo, tree)
     local pktlen = tvbuf:len()
 
-    if pktlen < 8 then
-        tree:add_proto_expert_info(ef_too_short)
-        return 0
+    -- Need at least 8 bytes to read STATUS and LENGTH
+    if pktlen < IGGY_MIN_HEADER_LEN then
+        -- Request more data
+        pktinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+        pktinfo.desegment_offset = 0
+        return -DESEGMENT_ONE_MORE_SEGMENT
     end
 
-    local subtree = tree:add(iggy, tvbuf:range(0, pktlen), "Iggy Response")
+    -- Read LENGTH field (at offset 4)
+    local msg_length = tvbuf:range(4, 4):le_uint()
+
+    -- Total message size = STATUS(4) + LENGTH(4) + payload
+    local total_len = 8 + msg_length
+
+    -- Check if we have the complete message
+    if pktlen < total_len then
+        -- Request more data
+        pktinfo.desegment_len = total_len - pktlen
+        pktinfo.desegment_offset = 0
+        return -DESEGMENT_ONE_MORE_SEGMENT
+    end
+
+    local subtree = tree:add(iggy, tvbuf:range(0, total_len), "Iggy Response")
     subtree:add(pf_message_type, "Response"):set_generated()
 
     -- STATUS field
@@ -237,11 +276,10 @@ local function dissect_response(tvbuf, pktinfo, tree)
     subtree:add(pf_resp_status_name, status_name):set_generated()
 
     -- LENGTH field
-    local msg_length = tvbuf:range(4, 4):le_uint()
     subtree:add_le(pf_resp_length, tvbuf:range(4, 4))
 
     -- PAYLOAD
-    local payload_len = pktlen - 8
+    local payload_len = total_len - 8
     if payload_len > 0 then
         subtree:add(pf_resp_payload, tvbuf:range(8, payload_len))
     end
@@ -262,7 +300,7 @@ local function dissect_response(tvbuf, pktinfo, tree)
             "Error response should have length=0")
     end
 
-    return pktlen
+    return total_len
 end
 
 ----------------------------------------
