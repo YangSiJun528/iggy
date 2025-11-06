@@ -1,4 +1,5 @@
 -- Basic type helpers module for Iggy Protocol Dissector
+-- Pure utility functions with no protocol-specific logic
 
 local utils = {}
 

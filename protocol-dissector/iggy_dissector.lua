@@ -15,8 +15,7 @@ end
 -- Load modules
 ----------------------------------------
 local fields = require("iggy.fields")
-local types = require("iggy.types")
-local protocol = require("iggy.dissector")
+local iggy_module = require("iggy.iggy")
 
 ----------------------------------------
 -- Protocol definition
@@ -32,9 +31,9 @@ iggy.fields = fields.get_all()
 -- Register expert info
 ----------------------------------------
 iggy.experts = {
-    types.ef_too_short,
-    dissector.ef_invalid_length,
-    dissector.ef_error_status,
+    iggy_module.ef_too_short,
+    iggy_module.ef_invalid_length,
+    iggy_module.ef_error_status,
 }
 
 ----------------------------------------
@@ -43,15 +42,15 @@ iggy.experts = {
 function iggy.dissector(tvbuf, pktinfo, root)
     pktinfo.cols.protocol:set("IGGY")
 
-    local msg_type = dissector.detect_message_type(tvbuf)
+    local msg_type = iggy_module.detect_message_type(tvbuf)
 
     if msg_type == "request" then
-        return dissector.dissect_request(tvbuf, pktinfo, root, iggy)
+        return iggy_module.dissect_request(tvbuf, pktinfo, root, iggy)
     elseif msg_type == "response" then
-        return dissector.dissect_response(tvbuf, pktinfo, root, iggy)
+        return iggy_module.dissect_response(tvbuf, pktinfo, root, iggy)
     else
         local tree = root:add(iggy, tvbuf(), "Iggy Protocol (Unknown)")
-        tree:add_proto_expert_info(types.ef_too_short, "Cannot determine message type")
+        tree:add_proto_expert_info(iggy_module.ef_too_short, "Cannot determine message type")
         return 0
     end
 end
@@ -64,7 +63,7 @@ local function heur_dissect_iggy(tvbuf, pktinfo, root)
         return false
     end
 
-    local msg_type = dissector.detect_message_type(tvbuf)
+    local msg_type = iggy_module.detect_message_type(tvbuf)
 
     if not msg_type then
         return false
