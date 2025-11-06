@@ -215,66 +215,6 @@ local commands = {
         fields = {},
         dissect_payload = nil,  -- No payload
     },
-    [11] = {
-        name = "GetSnapshot",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [12] = {
-        name = "GetClusterMetadata",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [20] = {
-        name = "GetMe",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [21] = {
-        name = "GetClient",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [22] = {
-        name = "GetClients",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [31] = {
-        name = "GetUser",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [32] = {
-        name = "GetUsers",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [33] = {
-        name = "CreateUser",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [34] = {
-        name = "DeleteUser",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [35] = {
-        name = "UpdateUser",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [36] = {
-        name = "UpdatePermissions",
-        fields = {},
-        dissect_payload = nil,
-    },
-    [37] = {
-        name = "ChangePassword",
-        fields = {},
-        dissect_payload = nil,
-    },
     [38] = {
         name = "LoginUser",
         fields = {
@@ -310,11 +250,6 @@ local commands = {
                 self.fields.context_len, self.fields.context)
             if not offset then return end
         end,
-    },
-    [39] = {
-        name = "LogoutUser",
-        fields = {},
-        dissect_payload = nil,
     },
     [121] = {
         name = "StoreConsumerOffset",
