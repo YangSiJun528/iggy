@@ -11,6 +11,7 @@ local IGGY_MIN_HEADER_LEN = 8  -- Minimum: LENGTH(4) + CODE/STATUS(4)
 ----------------------------------------
 -- Common Protocol fields (used across all messages)
 ----------------------------------------
+-- Base message fields
 local pf_message_type   = ProtoField.string("iggy.message_type", "Message Type")
 local pf_req_length     = ProtoField.uint32("iggy.request.length", "Length", base.DEC)
 local pf_req_code       = ProtoField.uint32("iggy.request.code", "Command Code", base.DEC)
@@ -22,14 +23,41 @@ local pf_resp_status_name = ProtoField.string("iggy.response.status_name", "Stat
 local pf_resp_length      = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
 local pf_resp_payload     = ProtoField.bytes("iggy.response.payload", "Payload")
 
--- Common Identifier fields
-local pf_id_kind       = ProtoField.uint8("iggy.identifier.kind", "Identifier Kind", base.DEC)
-local pf_id_length     = ProtoField.uint8("iggy.identifier.length", "Identifier Length", base.DEC)
-local pf_id_value_num  = ProtoField.uint32("iggy.identifier.value_num", "Identifier Value (Numeric)", base.DEC)
-local pf_id_value_str  = ProtoField.string("iggy.identifier.value_str", "Identifier Value (String)")
+-- Common data type: Identifier
+local pf_id_kind      = ProtoField.uint8("iggy.identifier.kind", "Kind", base.DEC)
+local pf_id_length    = ProtoField.uint8("iggy.identifier.length", "Length", base.DEC)
+local pf_id_value_num = ProtoField.uint32("iggy.identifier.value_num", "Value (Numeric)", base.DEC)
+local pf_id_value_str = ProtoField.string("iggy.identifier.value_str", "Value (String)")
 
--- Common Consumer fields
-local pf_consumer_kind = ProtoField.uint8("iggy.consumer.kind", "Consumer Kind", base.DEC)
+-- Common data type: Consumer
+local pf_consumer_kind = ProtoField.uint8("iggy.consumer.kind", "Kind", base.DEC)
+
+-- Command 38: LoginUser
+local pf_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
+local pf_login_username     = ProtoField.string("iggy.login.username", "Username")
+local pf_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
+local pf_login_password     = ProtoField.string("iggy.login.password", "Password")
+local pf_login_version_len  = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC)
+local pf_login_version      = ProtoField.string("iggy.login.version", "Version")
+local pf_login_context_len  = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
+local pf_login_context      = ProtoField.string("iggy.login.context", "Context")
+
+-- Command 121: StoreConsumerOffset
+local pf_store_offset_partition_id = ProtoField.uint32("iggy.store_offset.partition_id", "Partition ID", base.DEC)
+local pf_store_offset_offset       = ProtoField.uint64("iggy.store_offset.offset", "Offset", base.DEC)
+
+-- Common field structures (for reusability across commands)
+local common_id_fields = {
+    kind = pf_id_kind,
+    length = pf_id_length,
+    value_num = pf_id_value_num,
+    value_str = pf_id_value_str,
+}
+
+local common_consumer_fields = {
+    kind = pf_consumer_kind,
+    id_fields = common_id_fields,
+}
 
 -- Status code mappings
 local status_codes = {
@@ -146,17 +174,9 @@ end
 ----------------------------------------
 
 -- Dissect Identifier (kind + length + value)
--- id_fields: optional table with { kind, length, value_num, value_str }
+-- id_fields: required table with { kind, length, value_num, value_str }
 -- Returns: offset after parsing, or nil on failure
 local function dissect_identifier(tvbuf, tree, offset, pktlen, label, id_fields)
-    -- Use common fields if not provided
-    id_fields = id_fields or {
-        kind = pf_id_kind,
-        length = pf_id_length,
-        value_num = pf_id_value_num,
-        value_str = pf_id_value_str
-    }
-
     local remaining = pktlen - offset
     if remaining < 3 then
         tree:add_proto_expert_info(ef_too_short,
@@ -193,15 +213,9 @@ local function dissect_identifier(tvbuf, tree, offset, pktlen, label, id_fields)
 end
 
 -- Dissect Consumer (kind + Identifier)
--- consumer_fields: optional table with { kind, id_fields }
+-- consumer_fields: required table with { kind, id_fields }
 -- Returns: offset after parsing, or nil on failure
 local function dissect_consumer(tvbuf, tree, offset, pktlen, label, consumer_fields)
-    -- Use common fields if not provided
-    consumer_fields = consumer_fields or {
-        kind = pf_consumer_kind,
-        id_fields = nil  -- Will use default identifier fields
-    }
-
     local remaining = pktlen - offset
     if remaining < 4 then
         tree:add_proto_expert_info(ef_too_short,
@@ -241,14 +255,14 @@ local commands = {
     [38] = {
         name = "LoginUser",
         fields = {
-            username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC),
-            username     = ProtoField.string("iggy.login.username", "Username"),
-            password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC),
-            password     = ProtoField.string("iggy.login.password", "Password"),
-            version_len  = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC),
-            version      = ProtoField.string("iggy.login.version", "Version"),
-            context_len  = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC),
-            context      = ProtoField.string("iggy.login.context", "Context"),
+            username_len = pf_login_username_len,
+            username     = pf_login_username,
+            password_len = pf_login_password_len,
+            password     = pf_login_password,
+            version_len  = pf_login_version_len,
+            version      = pf_login_version,
+            context_len  = pf_login_context_len,
+            context      = pf_login_context,
         },
         dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
             local pktlen = offset + payload_len
@@ -277,22 +291,22 @@ local commands = {
     [121] = {
         name = "StoreConsumerOffset",
         fields = {
-            partition_id = ProtoField.uint32("iggy.store_offset.partition_id", "Partition ID", base.DEC),
-            offset       = ProtoField.uint64("iggy.store_offset.offset", "Offset", base.DEC),
+            partition_id = pf_store_offset_partition_id,
+            offset       = pf_store_offset_offset,
         },
         dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
             local pktlen = offset + payload_len
 
             -- Consumer (common data type)
-            offset = dissect_consumer(tvbuf, payload_tree, offset, pktlen, "Consumer")
+            offset = dissect_consumer(tvbuf, payload_tree, offset, pktlen, "Consumer", common_consumer_fields)
             if not offset then return end
 
             -- Stream ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Stream ID")
+            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Stream ID", common_id_fields)
             if not offset then return end
 
             -- Topic ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Topic ID")
+            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Topic ID", common_id_fields)
             if not offset then return end
 
             -- Partition ID (u32, 0 = None)
@@ -309,21 +323,23 @@ local commands = {
 ----------------------------------------
 -- Register all protocol fields
 ----------------------------------------
--- Start with common fields
 local all_fields = {
+    -- Base message fields
     pf_message_type,
     pf_req_length, pf_req_code, pf_req_code_name, pf_req_payload,
     pf_resp_status, pf_resp_status_name, pf_resp_length, pf_resp_payload,
+
+    -- Common data type fields
     pf_id_kind, pf_id_length, pf_id_value_num, pf_id_value_str,
     pf_consumer_kind,
-}
 
--- Add command-specific fields
-for _code, command in pairs(commands) do
-    for _field_name, field in pairs(command.fields) do
-        table.insert(all_fields, field)
-    end
-end
+    -- Command-specific fields
+    pf_login_username_len, pf_login_username,
+    pf_login_password_len, pf_login_password,
+    pf_login_version_len, pf_login_version,
+    pf_login_context_len, pf_login_context,
+    pf_store_offset_partition_id, pf_store_offset_offset,
+}
 
 iggy.fields = all_fields
 
