@@ -52,7 +52,7 @@ mod tests {
 
         fn analyze(&self) -> anyhow::Result<Vec<Value>> {
             let dissector_path = std::env::current_dir()?
-                .join("iggy.lua")
+                .join("iggy_dissector.lua")
                 .to_string_lossy()
                 .to_string();
 
