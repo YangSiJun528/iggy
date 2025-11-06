@@ -22,6 +22,15 @@ local pf_resp_status_name = ProtoField.string("iggy.response.status_name", "Stat
 local pf_resp_length      = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
 local pf_resp_payload     = ProtoField.bytes("iggy.response.payload", "Payload")
 
+-- Common Identifier fields
+local pf_id_kind       = ProtoField.uint8("iggy.identifier.kind", "Identifier Kind", base.DEC)
+local pf_id_length     = ProtoField.uint8("iggy.identifier.length", "Identifier Length", base.DEC)
+local pf_id_value_num  = ProtoField.uint32("iggy.identifier.value_num", "Identifier Value (Numeric)", base.DEC)
+local pf_id_value_str  = ProtoField.string("iggy.identifier.value_str", "Identifier Value (String)")
+
+-- Common Consumer fields
+local pf_consumer_kind = ProtoField.uint8("iggy.consumer.kind", "Consumer Kind", base.DEC)
+
 -- Status code mappings
 local status_codes = {
     [0] = "OK",
@@ -137,12 +146,21 @@ end
 ----------------------------------------
 
 -- Dissect Identifier (kind + length + value)
+-- id_fields: optional table with { kind, length, value_num, value_str }
 -- Returns: offset after parsing, or nil on failure
-local function dissect_identifier(tvbuf, tree, offset, field_name)
-    local remaining = tvbuf:len() - offset
+local function dissect_identifier(tvbuf, tree, offset, pktlen, label, id_fields)
+    -- Use common fields if not provided
+    id_fields = id_fields or {
+        kind = pf_id_kind,
+        length = pf_id_length,
+        value_num = pf_id_value_num,
+        value_str = pf_id_value_str
+    }
+
+    local remaining = pktlen - offset
     if remaining < 3 then
         tree:add_proto_expert_info(ef_too_short,
-            string.format("%s: insufficient data for identifier header", field_name))
+            string.format("%s: insufficient data for identifier header", label))
         return nil
     end
 
@@ -151,48 +169,53 @@ local function dissect_identifier(tvbuf, tree, offset, field_name)
 
     if remaining < 2 + length then
         tree:add_proto_expert_info(ef_too_short,
-            string.format("%s: insufficient data for identifier value (need %d bytes)", field_name, 2 + length))
+            string.format("%s: insufficient data for identifier value (need %d bytes)", label, 2 + length))
         return nil
     end
 
-    local kind_name = (kind == 1) and "Numeric" or (kind == 2) and "String" or "Unknown"
-    local id_tree = tree:add(string.format("%s: %s (%d bytes)", field_name, kind_name, length))
+    local kind_name = (kind == 1) and "Numeric" or (kind == 2) and "String" or "Unknown" --TODO: 이거는 구분 안해도 될 듯? 굳이? 실제로 프로토콜 구분하는거면 몰라
+    local id_tree = tree:add(string.format("%s: %s (%d bytes)", label, kind_name, length))
 
-    id_tree:add(string.format("  Kind: %s (%d)", kind_name, kind), tvbuf:range(offset, 1))
-    id_tree:add(string.format("  Length: %d", length), tvbuf:range(offset + 1, 1))
+    id_tree:add(id_fields.kind, tvbuf:range(offset, 1))
+    id_tree:add(id_fields.length, tvbuf:range(offset + 1, 1))
 
     if kind == 1 and length == 4 then
         -- Numeric identifier (u32 little-endian)
-        local value = read_u32_le(tvbuf, offset + 2)
-        id_tree:add(string.format("  Value: %d", value), tvbuf:range(offset + 2, 4))
+        id_tree:add_le(id_fields.value_num, tvbuf:range(offset + 2, 4))
     elseif kind == 2 then
         -- String identifier
-        local value = tvbuf:range(offset + 2, length):string()
-        id_tree:add(string.format("  Value: %s", value), tvbuf:range(offset + 2, length))
+        id_tree:add(id_fields.value_str, tvbuf:range(offset + 2, length))
     else
-        id_tree:add("  Value: (raw)", tvbuf:range(offset + 2, length))
+        id_tree:add("Value: (raw)", tvbuf:range(offset + 2, length))
     end
 
     return offset + 2 + length
 end
 
 -- Dissect Consumer (kind + Identifier)
+-- consumer_fields: optional table with { kind, id_fields }
 -- Returns: offset after parsing, or nil on failure
-local function dissect_consumer(tvbuf, tree, offset, field_name)
-    local remaining = tvbuf:len() - offset
+local function dissect_consumer(tvbuf, tree, offset, pktlen, label, consumer_fields)
+    -- Use common fields if not provided
+    consumer_fields = consumer_fields or {
+        kind = pf_consumer_kind,
+        id_fields = nil  -- Will use default identifier fields
+    }
+
+    local remaining = pktlen - offset
     if remaining < 4 then
         tree:add_proto_expert_info(ef_too_short,
-            string.format("%s: insufficient data for consumer", field_name))
+            string.format("%s: insufficient data for consumer", label))
         return nil
     end
 
     local consumer_kind = read_u8(tvbuf, offset)
     local consumer_kind_name = (consumer_kind == 1) and "Consumer" or (consumer_kind == 2) and "ConsumerGroup" or "Unknown"
 
-    local consumer_tree = tree:add(string.format("%s: %s", field_name, consumer_kind_name))
-    consumer_tree:add(string.format("  Kind: %s (%d)", consumer_kind_name, consumer_kind), tvbuf:range(offset, 1))
+    local consumer_tree = tree:add(string.format("%s: %s", label, consumer_kind_name))
+    consumer_tree:add(consumer_fields.kind, tvbuf:range(offset, 1))
 
-    local new_offset = dissect_identifier(tvbuf, consumer_tree, offset + 1, "ID")
+    local new_offset = dissect_identifier(tvbuf, consumer_tree, offset + 1, pktlen, "ID", consumer_fields.id_fields)
     if not new_offset then
         return nil
     end
@@ -261,15 +284,15 @@ local commands = {
             local pktlen = offset + payload_len
 
             -- Consumer (common data type)
-            offset = dissect_consumer(tvbuf, payload_tree, offset, "Consumer")
+            offset = dissect_consumer(tvbuf, payload_tree, offset, pktlen, "Consumer")
             if not offset then return end
 
             -- Stream ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, "Stream ID")
+            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Stream ID")
             if not offset then return end
 
             -- Topic ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, "Topic ID")
+            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Topic ID")
             if not offset then return end
 
             -- Partition ID (u32, 0 = None)
@@ -291,6 +314,8 @@ local all_fields = {
     pf_message_type,
     pf_req_length, pf_req_code, pf_req_code_name, pf_req_payload,
     pf_resp_status, pf_resp_status_name, pf_resp_length, pf_resp_payload,
+    pf_id_kind, pf_id_length, pf_id_value_num, pf_id_value_str,
+    pf_consumer_kind,
 }
 
 -- Add command-specific fields
