@@ -137,18 +137,22 @@ end
 ----------------------------------------
 
 -- Dissect Identifier (kind + length + value)
--- Returns: offset after parsing, display_value
+-- Returns: offset after parsing, or nil on failure
 local function dissect_identifier(tvbuf, tree, offset, field_name)
     local remaining = tvbuf:len() - offset
     if remaining < 3 then
-        return offset, nil
+        tree:add_proto_expert_info(ef_too_short,
+            string.format("%s: insufficient data for identifier header", field_name))
+        return nil
     end
 
     local kind = read_u8(tvbuf, offset)
     local length = read_u8(tvbuf, offset + 1)
 
     if remaining < 2 + length then
-        return offset, nil
+        tree:add_proto_expert_info(ef_too_short,
+            string.format("%s: insufficient data for identifier value (need %d bytes)", field_name, 2 + length))
+        return nil
     end
 
     local kind_name = (kind == 1) and "Numeric" or (kind == 2) and "String" or "Unknown"
@@ -157,31 +161,29 @@ local function dissect_identifier(tvbuf, tree, offset, field_name)
     id_tree:add(string.format("  Kind: %s (%d)", kind_name, kind), tvbuf:range(offset, 1))
     id_tree:add(string.format("  Length: %d", length), tvbuf:range(offset + 1, 1))
 
-    local display_value = ""
     if kind == 1 and length == 4 then
         -- Numeric identifier (u32 little-endian)
         local value = read_u32_le(tvbuf, offset + 2)
         id_tree:add(string.format("  Value: %d", value), tvbuf:range(offset + 2, 4))
-        display_value = tostring(value)
     elseif kind == 2 then
         -- String identifier
         local value = tvbuf:range(offset + 2, length):string()
         id_tree:add(string.format("  Value: %s", value), tvbuf:range(offset + 2, length))
-        display_value = value
     else
         id_tree:add("  Value: (raw)", tvbuf:range(offset + 2, length))
-        display_value = "(unknown)"
     end
 
-    return offset + 2 + length, display_value
+    return offset + 2 + length
 end
 
 -- Dissect Consumer (kind + Identifier)
--- Returns: offset after parsing, display_value
+-- Returns: offset after parsing, or nil on failure
 local function dissect_consumer(tvbuf, tree, offset, field_name)
     local remaining = tvbuf:len() - offset
     if remaining < 4 then
-        return offset, nil
+        tree:add_proto_expert_info(ef_too_short,
+            string.format("%s: insufficient data for consumer", field_name))
+        return nil
     end
 
     local consumer_kind = read_u8(tvbuf, offset)
@@ -190,12 +192,12 @@ local function dissect_consumer(tvbuf, tree, offset, field_name)
     local consumer_tree = tree:add(string.format("%s: %s", field_name, consumer_kind_name))
     consumer_tree:add(string.format("  Kind: %s (%d)", consumer_kind_name, consumer_kind), tvbuf:range(offset, 1))
 
-    local new_offset, id_value = dissect_identifier(tvbuf, consumer_tree, offset + 1, "ID")
-    if not id_value then
-        return offset, nil
+    local new_offset = dissect_identifier(tvbuf, consumer_tree, offset + 1, "ID")
+    if not new_offset then
+        return nil
     end
 
-    return new_offset, string.format("%s|%s", consumer_kind_name, id_value)
+    return new_offset
 end
 
 ----------------------------------------
@@ -324,16 +326,15 @@ local commands = {
             local pktlen = offset + payload_len
 
             -- Consumer (common data type)
-            local new_offset, consumer_value = dissect_consumer(tvbuf, payload_tree, offset, "Consumer")
-            if not consumer_value then return end --TODO: 이거 에러 상황임?
-            offset = new_offset
+            offset = dissect_consumer(tvbuf, payload_tree, offset, "Consumer")
+            if not offset then return end
 
             -- Stream ID (common data type)
-            offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Stream ID")
+            offset = dissect_identifier(tvbuf, payload_tree, offset, "Stream ID")
             if not offset then return end
 
             -- Topic ID (common data type)
-            offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Topic ID")
+            offset = dissect_identifier(tvbuf, payload_tree, offset, "Topic ID")
             if not offset then return end
 
             -- Partition ID (u32, 0 = None)
