@@ -9891,6 +9891,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wireshark"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "iggy_common",
+ "serde_json",
+ "server",
+ "tokio",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -39,7 +39,9 @@ members = [
     "core/sdk",
     "core/server",
     "core/tools",
-    "examples/rust", "protocol-dissector",
+    "examples/rust",
+    "protocol-dissector",
+    "wireshark",
 ]
 exclude = ["foreign/python"]
 resolver = "2"
