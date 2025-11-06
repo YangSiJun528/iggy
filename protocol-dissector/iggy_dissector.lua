@@ -93,6 +93,46 @@ local function dissect_u64_le(tvbuf, tree, offset, field, pktlen)
 end
 
 ----------------------------------------
+-- String dissection helpers
+----------------------------------------
+
+-- Generic string dissector with length prefix
+-- len_size: size of length field in bytes (1 for u8, 4 for u32)
+-- read_len_fn: function(tvbuf, offset) -> length_value
+-- add_len_fn: function(t, f, r) -> void (tree.add or tree.add_le)
+local function dissect_string_with_len(tvbuf, tree, offset, pktlen, len_field, str_field, len_size, read_len_fn, add_len_fn)
+    if offset + len_size > pktlen then
+        return nil
+    end
+
+    local len = read_len_fn(tvbuf, offset)
+    add_len_fn(tree, len_field, tvbuf:range(offset, len_size))
+    offset = offset + len_size
+
+    if len > 0 then
+        if offset + len > pktlen then
+            return nil
+        end
+        tree:add(str_field, tvbuf:range(offset, len))
+        offset = offset + len
+    end
+
+    return offset
+end
+
+-- Convenience wrapper for u8 length prefix
+local function dissect_string_with_u8_len(tvbuf, tree, offset, pktlen, len_field, str_field)
+    return dissect_string_with_len(tvbuf, tree, offset, pktlen, len_field, str_field,
+        1, read_u8, function(t, f, r) t:add(f, r) end)
+end
+
+-- Convenience wrapper for u32 little-endian length prefix
+local function dissect_string_with_u32_le_len(tvbuf, tree, offset, pktlen, len_field, str_field)
+    return dissect_string_with_len(tvbuf, tree, offset, pktlen, len_field, str_field,
+        4, read_u32_le, function(t, f, r) t:add_le(f, r) end)
+end
+
+----------------------------------------
 -- Common data type dissectors
 ----------------------------------------
 
@@ -249,52 +289,24 @@ local commands = {
             local pktlen = offset + payload_len
 
             -- Username (u8 length + string)
-            if offset + 1 <= pktlen then
-                local username_len = read_u8(tvbuf, offset)
-                payload_tree:add(self.fields.username_len, tvbuf:range(offset, 1))
-                offset = offset + 1
-
-                if username_len > 0 and offset + username_len <= pktlen then
-                    payload_tree:add(self.fields.username, tvbuf:range(offset, username_len))
-                    offset = offset + username_len
-                end
-            end
+            offset = dissect_string_with_u8_len(tvbuf, payload_tree, offset, pktlen,
+                self.fields.username_len, self.fields.username)
+            if not offset then return end
 
             -- Password (u8 length + string)
-            if offset + 1 <= pktlen then
-                local password_len = read_u8(tvbuf, offset)
-                payload_tree:add(self.fields.password_len, tvbuf:range(offset, 1))
-                offset = offset + 1
-
-                if password_len > 0 and offset + password_len <= pktlen then
-                    payload_tree:add(self.fields.password, tvbuf:range(offset, password_len))
-                    offset = offset + password_len
-                end
-            end
+            offset = dissect_string_with_u8_len(tvbuf, payload_tree, offset, pktlen,
+                self.fields.password_len, self.fields.password)
+            if not offset then return end
 
             -- Version (u32 length + string)
-            if offset + 4 <= pktlen then
-                local version_len = read_u32_le(tvbuf, offset)
-                payload_tree:add_le(self.fields.version_len, tvbuf:range(offset, 4))
-                offset = offset + 4
-
-                if version_len > 0 and offset + version_len <= pktlen then
-                    payload_tree:add(self.fields.version, tvbuf:range(offset, version_len))
-                    offset = offset + version_len
-                end
-            end
+            offset = dissect_string_with_u32_le_len(tvbuf, payload_tree, offset, pktlen,
+                self.fields.version_len, self.fields.version)
+            if not offset then return end
 
             -- Context (u32 length + string)
-            if offset + 4 <= pktlen then
-                local context_len = read_u32_le(tvbuf, offset)
-                payload_tree:add_le(self.fields.context_len, tvbuf:range(offset, 4))
-                offset = offset + 4
-
-                if context_len > 0 and offset + context_len <= pktlen then
-                    payload_tree:add(self.fields.context, tvbuf:range(offset, context_len))
-                    offset = offset + context_len
-                end
-            end
+            offset = dissect_string_with_u32_le_len(tvbuf, payload_tree, offset, pktlen,
+                self.fields.context_len, self.fields.context)
+            if not offset then return end
         end,
     },
     [39] = {
@@ -313,7 +325,7 @@ local commands = {
 
             -- Consumer (common data type)
             local new_offset, consumer_value = dissect_consumer(tvbuf, payload_tree, offset, "Consumer")
-            if not consumer_value then return end
+            if not consumer_value then return end --TODO: 이거 에러 상황임?
             offset = new_offset
 
             -- Stream ID (common data type)
