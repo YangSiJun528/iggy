@@ -39,15 +39,15 @@ Wireshark Lua 기반 Dissector로 iggy 프로토콜의 바이너리 통신(TCP/Q
 1. Lua 스크립트를 Wireshark의 플러그인 디렉토리에 복사:
    ```bash
    # macOS
-   cp iggy_dissector.lua ~/.local/lib/wireshark/plugins/
-   rm ~/.local/lib/wireshark/plugins/iggy_dissector.lua
+   cp iggy.lua ~/.local/lib/wireshark/plugins/
+   rm ~/.local/lib/wireshark/plugins/iggy.lua
 
    # Linux
-   cp iggy_dissector.lua ~/.local/lib/wireshark/plugins/
-   rm ~/.local/lib/wireshark/plugins/iggy_dissector.lua
+   cp iggy.lua ~/.local/lib/wireshark/plugins/
+   rm ~/.local/lib/wireshark/plugins/iggy.lua
 
    # Windows
-   copy iggy_dissector.lua %APPDATA%\Wireshark\plugins\
+   copy iggy.lua %APPDATA%\Wireshark\plugins\
    ```
 
 2. 또는 Wireshark에서 직접 로드:
