@@ -46,18 +46,27 @@ local pf_login_context      = ProtoField.string("iggy.login.context", "Context")
 local pf_store_offset_partition_id = ProtoField.uint32("iggy.store_offset.partition_id", "Partition ID", base.DEC)
 local pf_store_offset_offset       = ProtoField.uint64("iggy.store_offset.offset", "Offset", base.DEC)
 
--- Common field structures (for reusability across commands)
-local common_id_fields = {
-    kind = pf_id_kind,
-    length = pf_id_length,
-    value_num = pf_id_value_num,
-    value_str = pf_id_value_str,
-}
+----------------------------------------
+-- Field structure helpers (for command declarations)
+----------------------------------------
+-- These functions return field structure tables that commands can use
+-- to declare their payload structure in a self-documenting way
 
-local common_consumer_fields = {
-    kind = pf_consumer_kind,
-    id_fields = common_id_fields,
-}
+local function make_identifier_fields()
+    return {
+        kind = pf_id_kind,
+        length = pf_id_length,
+        value_num = pf_id_value_num,
+        value_str = pf_id_value_str,
+    }
+end
+
+local function make_consumer_fields()
+    return {
+        kind = pf_consumer_kind,
+        id_fields = make_identifier_fields(),
+    }
+end
 
 -- Status code mappings
 local status_codes = {
@@ -291,6 +300,9 @@ local commands = {
     [121] = {
         name = "StoreConsumerOffset",
         fields = {
+            consumer     = make_consumer_fields(),
+            stream_id    = make_identifier_fields(),
+            topic_id     = make_identifier_fields(),
             partition_id = pf_store_offset_partition_id,
             offset       = pf_store_offset_offset,
         },
@@ -298,15 +310,15 @@ local commands = {
             local pktlen = offset + payload_len
 
             -- Consumer (common data type)
-            offset = dissect_consumer(tvbuf, payload_tree, offset, pktlen, "Consumer", common_consumer_fields)
+            offset = dissect_consumer(tvbuf, payload_tree, offset, pktlen, "Consumer", self.fields.consumer)
             if not offset then return end
 
             -- Stream ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Stream ID", common_id_fields)
+            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Stream ID", self.fields.stream_id)
             if not offset then return end
 
             -- Topic ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Topic ID", common_id_fields)
+            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Topic ID", self.fields.topic_id)
             if not offset then return end
 
             -- Partition ID (u32, 0 = None)
