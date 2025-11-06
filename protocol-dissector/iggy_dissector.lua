@@ -51,6 +51,48 @@ local ef_error_status   = ProtoExpert.new("iggy.error_status.expert",
 iggy.experts = { ef_too_short, ef_invalid_length, ef_error_status }
 
 ----------------------------------------
+-- Basic type helpers (for reusability)
+----------------------------------------
+
+-- Read basic types (returns value only)
+local function read_u8(tvbuf, offset)
+    return tvbuf:range(offset, 1):uint()
+end
+
+local function read_u32_le(tvbuf, offset)
+    return tvbuf:range(offset, 4):le_uint()
+end
+
+local function read_u64_le(tvbuf, offset)
+    return tvbuf:range(offset, 8):le_uint64()
+end
+
+-- Dissect basic types (adds to tree, returns new offset or nil on bounds check failure)
+local function dissect_u8(tvbuf, tree, offset, field, pktlen)
+    if offset + 1 > pktlen then
+        return nil
+    end
+    tree:add(field, tvbuf:range(offset, 1))
+    return offset + 1
+end
+
+local function dissect_u32_le(tvbuf, tree, offset, field, pktlen)
+    if offset + 4 > pktlen then
+        return nil
+    end
+    tree:add_le(field, tvbuf:range(offset, 4))
+    return offset + 4
+end
+
+local function dissect_u64_le(tvbuf, tree, offset, field, pktlen)
+    if offset + 8 > pktlen then
+        return nil
+    end
+    tree:add_le(field, tvbuf:range(offset, 8))
+    return offset + 8
+end
+
+----------------------------------------
 -- Common data type dissectors
 ----------------------------------------
 
@@ -62,8 +104,8 @@ local function dissect_identifier(tvbuf, tree, offset, field_name)
         return offset, nil
     end
 
-    local kind = tvbuf:range(offset, 1):uint()
-    local length = tvbuf:range(offset + 1, 1):uint()
+    local kind = read_u8(tvbuf, offset)
+    local length = read_u8(tvbuf, offset + 1)
 
     if remaining < 2 + length then
         return offset, nil
@@ -78,7 +120,7 @@ local function dissect_identifier(tvbuf, tree, offset, field_name)
     local display_value = ""
     if kind == 1 and length == 4 then
         -- Numeric identifier (u32 little-endian)
-        local value = tvbuf:range(offset + 2, 4):le_uint()
+        local value = read_u32_le(tvbuf, offset + 2)
         id_tree:add(string.format("  Value: %d", value), tvbuf:range(offset + 2, 4))
         display_value = tostring(value)
     elseif kind == 2 then
@@ -102,7 +144,7 @@ local function dissect_consumer(tvbuf, tree, offset, field_name)
         return offset, nil
     end
 
-    local consumer_kind = tvbuf:range(offset, 1):uint()
+    local consumer_kind = read_u8(tvbuf, offset)
     local consumer_kind_name = (consumer_kind == 1) and "Consumer" or (consumer_kind == 2) and "ConsumerGroup" or "Unknown"
 
     local consumer_tree = tree:add(string.format("%s: %s", field_name, consumer_kind_name))
@@ -206,9 +248,9 @@ local commands = {
         dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
             local pktlen = offset + payload_len
 
-            -- Username
-            if offset < pktlen then
-                local username_len = tvbuf:range(offset, 1):uint()
+            -- Username (u8 length + string)
+            if offset + 1 <= pktlen then
+                local username_len = read_u8(tvbuf, offset)
                 payload_tree:add(self.fields.username_len, tvbuf:range(offset, 1))
                 offset = offset + 1
 
@@ -218,9 +260,9 @@ local commands = {
                 end
             end
 
-            -- Password
-            if offset < pktlen then
-                local password_len = tvbuf:range(offset, 1):uint()
+            -- Password (u8 length + string)
+            if offset + 1 <= pktlen then
+                local password_len = read_u8(tvbuf, offset)
                 payload_tree:add(self.fields.password_len, tvbuf:range(offset, 1))
                 offset = offset + 1
 
@@ -230,9 +272,9 @@ local commands = {
                 end
             end
 
-            -- Version
+            -- Version (u32 length + string)
             if offset + 4 <= pktlen then
-                local version_len = tvbuf:range(offset, 4):le_uint()
+                local version_len = read_u32_le(tvbuf, offset)
                 payload_tree:add_le(self.fields.version_len, tvbuf:range(offset, 4))
                 offset = offset + 4
 
@@ -242,9 +284,9 @@ local commands = {
                 end
             end
 
-            -- Context
+            -- Context (u32 length + string)
             if offset + 4 <= pktlen then
-                local context_len = tvbuf:range(offset, 4):le_uint()
+                local context_len = read_u32_le(tvbuf, offset)
                 payload_tree:add_le(self.fields.context_len, tvbuf:range(offset, 4))
                 offset = offset + 4
 
@@ -271,37 +313,24 @@ local commands = {
 
             -- Consumer (common data type)
             local new_offset, consumer_value = dissect_consumer(tvbuf, payload_tree, offset, "Consumer")
-            if not consumer_value then
-                return
-            end
+            if not consumer_value then return end
             offset = new_offset
 
             -- Stream ID (common data type)
-            new_offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Stream ID")
-            if not new_offset then
-                return
-            end
-            offset = new_offset
+            offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Stream ID")
+            if not offset then return end
 
             -- Topic ID (common data type)
-            new_offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Topic ID")
-            if not new_offset then
-                return
-            end
-            offset = new_offset
+            offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Topic ID")
+            if not offset then return end
 
             -- Partition ID (u32, 0 = None)
-            if offset + 4 <= pktlen then
-                local partition_id = tvbuf:range(offset, 4):le_uint()
-                payload_tree:add_le(self.fields.partition_id, tvbuf:range(offset, 4))
-                offset = offset + 4
-            end
+            offset = dissect_u32_le(tvbuf, payload_tree, offset, self.fields.partition_id, pktlen)
+            if not offset then return end
 
             -- Offset (u64)
-            if offset + 8 <= pktlen then
-                payload_tree:add_le(self.fields.offset, tvbuf:range(offset, 8))
-                offset = offset + 8
-            end
+            offset = dissect_u64_le(tvbuf, payload_tree, offset, self.fields.offset, pktlen)
+            if not offset then return end
         end,
     },
 }

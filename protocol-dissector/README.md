@@ -119,13 +119,21 @@ Lua 스크립트는 모듈화되어 있어 새로운 명령어를 쉽게 추가�
     fields = {
         -- 명령어 전용 ProtoField 정의
         my_field = ProtoField.uint32("iggy.newcmd.my_field", "My Field", base.DEC),
+        my_count = ProtoField.uint64("iggy.newcmd.my_count", "My Count", base.DEC),
     },
     dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
-        -- payload 파싱 로직
-        payload_tree:add_le(self.fields.my_field, tvbuf:range(offset, 4))
+        local pktlen = offset + payload_len
+
+        -- 기본 타입 헬퍼 함수 사용
+        offset = dissect_u32_le(tvbuf, payload_tree, offset, self.fields.my_field, pktlen)
+        if not offset then return end
+
+        offset = dissect_u64_le(tvbuf, payload_tree, offset, self.fields.my_count, pktlen)
+        if not offset then return end
 
         -- 공통 데이터 타입 사용
-        local new_offset, id_value = dissect_identifier(tvbuf, payload_tree, offset + 4, "Resource ID")
+        offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Resource ID")
+        if not offset then return end
     end,
 }
 ```
@@ -141,6 +149,33 @@ local new_offset, display_value = dissect_identifier(tvbuf, tree, offset, "Field
 -- Consumer 파싱
 local new_offset, consumer_info = dissect_consumer(tvbuf, tree, offset, "Consumer")
 ```
+
+### 기본 타입 헬퍼 함수
+
+코드 재사용성을 위해 기본 타입 헬퍼 함수들을 제공합니다:
+
+#### 값 읽기 함수 (트리에 추가하지 않음)
+```lua
+local value = read_u8(tvbuf, offset)
+local value = read_u32_le(tvbuf, offset)
+local value = read_u64_le(tvbuf, offset)
+```
+
+#### Dissect 함수 (트리에 추가하면서 파싱)
+```lua
+-- 기본 타입 dissect (offset 검증 포함)
+offset = dissect_u8(tvbuf, tree, offset, field, pktlen)
+offset = dissect_u32_le(tvbuf, tree, offset, field, pktlen)
+offset = dissect_u64_le(tvbuf, tree, offset, field, pktlen)
+
+-- Length-prefixed 문자열 dissect
+offset, str_value = dissect_string_with_u8_len(tvbuf, tree, offset,
+                                               len_field, str_field, pktlen)
+offset, str_value = dissect_string_with_u32_len(tvbuf, tree, offset,
+                                                len_field, str_field, pktlen)
+```
+
+이 함수들은 bounds checking을 자동으로 수행하며, 실패 시 nil을 반환합니다.
 
 ## 제한사항
 
