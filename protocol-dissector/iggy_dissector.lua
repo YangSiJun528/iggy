@@ -51,6 +51,72 @@ local ef_error_status   = ProtoExpert.new("iggy.error_status.expert",
 iggy.experts = { ef_too_short, ef_invalid_length, ef_error_status }
 
 ----------------------------------------
+-- Common data type dissectors
+----------------------------------------
+
+-- Dissect Identifier (kind + length + value)
+-- Returns: offset after parsing, display_value
+local function dissect_identifier(tvbuf, tree, offset, field_name)
+    local remaining = tvbuf:len() - offset
+    if remaining < 3 then
+        return offset, nil
+    end
+
+    local kind = tvbuf:range(offset, 1):uint()
+    local length = tvbuf:range(offset + 1, 1):uint()
+
+    if remaining < 2 + length then
+        return offset, nil
+    end
+
+    local kind_name = (kind == 1) and "Numeric" or (kind == 2) and "String" or "Unknown"
+    local id_tree = tree:add(string.format("%s: %s (%d bytes)", field_name, kind_name, length))
+
+    id_tree:add(string.format("  Kind: %s (%d)", kind_name, kind), tvbuf:range(offset, 1))
+    id_tree:add(string.format("  Length: %d", length), tvbuf:range(offset + 1, 1))
+
+    local display_value = ""
+    if kind == 1 and length == 4 then
+        -- Numeric identifier (u32 little-endian)
+        local value = tvbuf:range(offset + 2, 4):le_uint()
+        id_tree:add(string.format("  Value: %d", value), tvbuf:range(offset + 2, 4))
+        display_value = tostring(value)
+    elseif kind == 2 then
+        -- String identifier
+        local value = tvbuf:range(offset + 2, length):string()
+        id_tree:add(string.format("  Value: %s", value), tvbuf:range(offset + 2, length))
+        display_value = value
+    else
+        id_tree:add("  Value: (raw)", tvbuf:range(offset + 2, length))
+        display_value = "(unknown)"
+    end
+
+    return offset + 2 + length, display_value
+end
+
+-- Dissect Consumer (kind + Identifier)
+-- Returns: offset after parsing, display_value
+local function dissect_consumer(tvbuf, tree, offset, field_name)
+    local remaining = tvbuf:len() - offset
+    if remaining < 4 then
+        return offset, nil
+    end
+
+    local consumer_kind = tvbuf:range(offset, 1):uint()
+    local consumer_kind_name = (consumer_kind == 1) and "Consumer" or (consumer_kind == 2) and "ConsumerGroup" or "Unknown"
+
+    local consumer_tree = tree:add(string.format("%s: %s", field_name, consumer_kind_name))
+    consumer_tree:add(string.format("  Kind: %s (%d)", consumer_kind_name, consumer_kind), tvbuf:range(offset, 1))
+
+    local new_offset, id_value = dissect_identifier(tvbuf, consumer_tree, offset + 1, "ID")
+    if not id_value then
+        return offset, nil
+    end
+
+    return new_offset, string.format("%s|%s", consumer_kind_name, id_value)
+end
+
+----------------------------------------
 -- Command Registry
 -- Each command has: name, fields (ProtoFields), dissect_payload function
 ----------------------------------------
@@ -193,6 +259,50 @@ local commands = {
         name = "LogoutUser",
         fields = {},
         dissect_payload = nil,
+    },
+    [121] = {
+        name = "StoreConsumerOffset",
+        fields = {
+            partition_id = ProtoField.uint32("iggy.store_offset.partition_id", "Partition ID", base.DEC),
+            offset       = ProtoField.uint64("iggy.store_offset.offset", "Offset", base.DEC),
+        },
+        dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
+            local pktlen = offset + payload_len
+
+            -- Consumer (common data type)
+            local new_offset, consumer_value = dissect_consumer(tvbuf, payload_tree, offset, "Consumer")
+            if not consumer_value then
+                return
+            end
+            offset = new_offset
+
+            -- Stream ID (common data type)
+            new_offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Stream ID")
+            if not new_offset then
+                return
+            end
+            offset = new_offset
+
+            -- Topic ID (common data type)
+            new_offset, _ = dissect_identifier(tvbuf, payload_tree, offset, "Topic ID")
+            if not new_offset then
+                return
+            end
+            offset = new_offset
+
+            -- Partition ID (u32, 0 = None)
+            if offset + 4 <= pktlen then
+                local partition_id = tvbuf:range(offset, 4):le_uint()
+                payload_tree:add_le(self.fields.partition_id, tvbuf:range(offset, 4))
+                offset = offset + 4
+            end
+
+            -- Offset (u64)
+            if offset + 8 <= pktlen then
+                payload_tree:add_le(self.fields.offset, tvbuf:range(offset, 8))
+                offset = offset + 8
+            end
+        end,
     },
 }
 

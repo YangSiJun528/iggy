@@ -9,6 +9,7 @@ Wireshark Lua 기반 Dissector로 iggy 프로토콜의 바이너리 통신(TCP/Q
 - **Ping** (code: 1) - payload 없음
 - **GetStats** (code: 10) - payload 없음
 - **LoginUser** (code: 38) - username, password, version, context를 포함하는 payload
+- **StoreConsumerOffset** (code: 121) - consumer, stream_id, topic_id, partition_id, offset (공통 데이터 타입 사용 예시)
 
 ## 프로토콜 구조
 
@@ -70,6 +71,7 @@ cargo test -- --ignored --nocapture
 cargo test test_ping_dissection_with_tshark -- --ignored --nocapture
 cargo test test_get_stats_dissection_with_tshark -- --ignored --nocapture
 cargo test test_login_user_dissection_with_tshark -- --ignored --nocapture
+cargo test test_store_consumer_offset_dissection_with_tshark -- --ignored --nocapture
 ```
 
 **참고**: 테스트는 시스템에 `tshark`가 설치되어 있어야 하며, 로컬 네트워크 인터페이스(lo0)에 대한 캡처 권한이 필요합니다.
@@ -83,22 +85,61 @@ cargo test test_login_user_dissection_with_tshark -- --ignored --nocapture
 | 1 | Ping | 없음 |
 | 10 | GetStats | 없음 |
 | 38 | LoginUser | username, password, version, context |
+| 121 | StoreConsumerOffset | consumer, stream_id, topic_id, partition_id, offset |
+
+## 공통 데이터 타입
+
+Dissector는 재사용 가능한 공통 데이터 타입을 지원합니다:
+
+### Identifier
+- **구조**: kind (1 byte) + length (1 byte) + value (length bytes)
+- **Kind 타입**:
+  - 1 = Numeric (u32 little-endian, length = 4)
+  - 2 = String (UTF-8, length = 문자열 길이)
+- **사용처**: stream ID, topic ID, consumer ID 등
+
+### Consumer
+- **구조**: kind (1 byte) + Identifier
+- **Kind 타입**:
+  - 1 = Consumer (일반 consumer)
+  - 2 = ConsumerGroup (consumer group)
+- **사용처**: consumer offset 관련 명령어
 
 ## 확장성
 
-Lua 스크립트는 모듈화되어 있어 새로운 명령어를 쉽게 추가할 수 있습니다:
+Lua 스크립트는 모듈화되어 있어 새로운 명령어를 쉽게 추가할 수 있습니다.
 
-1. `command_names` 테이블에 새 명령어 코드와 이름 추가
-2. 필요시 새 필드 정의 (ProtoField)
-3. `command_handlers` 테이블에 payload 파서 추가
+### 새 명령어 추가하기
+
+`commands` 테이블에 새 항목을 추가하면 됩니다:
 
 ```lua
-command_handlers[NEW_CODE] = {
+[NEW_CODE] = {
     name = "NewCommand",
-    parse_payload = function(buffer, pinfo, tree, offset)
+    fields = {
+        -- 명령어 전용 ProtoField 정의
+        my_field = ProtoField.uint32("iggy.newcmd.my_field", "My Field", base.DEC),
+    },
+    dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
         -- payload 파싱 로직
-    end
+        payload_tree:add_le(self.fields.my_field, tvbuf:range(offset, 4))
+
+        -- 공통 데이터 타입 사용
+        local new_offset, id_value = dissect_identifier(tvbuf, payload_tree, offset + 4, "Resource ID")
+    end,
 }
+```
+
+### 공통 데이터 타입 사용하기
+
+공통 데이터 타입 파서 함수를 호출하여 재사용할 수 있습니다:
+
+```lua
+-- Identifier 파싱
+local new_offset, display_value = dissect_identifier(tvbuf, tree, offset, "Field Name")
+
+-- Consumer 파싱
+local new_offset, consumer_info = dissect_consumer(tvbuf, tree, offset, "Consumer")
 ```
 
 ## 제한사항

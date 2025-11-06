@@ -4,6 +4,8 @@ mod tests {
     use iggy_common::get_stats::GetStats;
     use iggy_common::login_user::LoginUser;
     use iggy_common::ping::Ping;
+    use iggy_common::store_consumer_offset::StoreConsumerOffset;
+    use iggy_common::{Consumer, ConsumerKind, Identifier};
     use serde_json::Value;
     use server::binary::command::ServerCommand;
     use std::fs;
@@ -319,5 +321,82 @@ mod tests {
         assert_eq!(username, "testuser", "Username should be 'testuser'");
 
         println!("✓ LOGIN_USER dissection verified successfully!");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_store_consumer_offset_dissection_with_tshark() {
+        let port = 8094;
+        let capture = TsharkCapture::new(port).expect("Failed to create capture");
+        let mut tshark = capture.start_capture(port).expect("Failed to start tshark");
+
+        sleep(Duration::from_secs(1)).await;
+
+        tokio::spawn(async move {
+            let _ = run_dummy_server(port).await;
+        });
+        sleep(Duration::from_millis(500)).await;
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .expect("Failed to connect");
+
+        let store_offset_command = ServerCommand::StoreConsumerOffset(StoreConsumerOffset {
+            consumer: Consumer {
+                kind: ConsumerKind::Consumer,
+                id: Identifier::numeric(123).unwrap(),
+            },
+            stream_id: Identifier::numeric(1).unwrap(),
+            topic_id: Identifier::named("test-topic").unwrap(),
+            partition_id: Some(5),
+            offset: 1000,
+        });
+        let store_offset_packet = create_packet_from_server_command(&store_offset_command);
+
+        println!(
+            "Sending STORE_CONSUMER_OFFSET via ServerCommand: {} bytes",
+            store_offset_packet.len()
+        );
+
+        stream
+            .write_all(&store_offset_packet)
+            .await
+            .expect("Failed to send packet");
+        stream.flush().await.expect("Failed to flush");
+
+        sleep(Duration::from_secs(1)).await;
+
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze().expect("Failed to analyze packets");
+        assert!(!packets.is_empty(), "No packets captured");
+
+        let iggy_packet = packets
+            .iter()
+            .find(|p| p["_source"]["layers"].get("iggy").is_some())
+            .expect("No Iggy packet found");
+
+        let layers = &iggy_packet["_source"]["layers"];
+        let iggy_layer = &layers["iggy"];
+
+        let code = iggy_layer["iggy.request.code"]
+            .as_str()
+            .and_then(|s| s.parse::<u32>().ok())
+            .expect("Failed to parse CODE field");
+        assert_eq!(
+            code, 121,
+            "CODE field should be 121 for STORE_CONSUMER_OFFSET"
+        );
+
+        let command_name = iggy_layer["iggy.request.code_name"]
+            .as_str()
+            .expect("Failed to get command name");
+        assert_eq!(
+            command_name, "StoreConsumerOffset",
+            "Command name should be 'StoreConsumerOffset'"
+        );
+
+        println!("✓ STORE_CONSUMER_OFFSET dissection verified successfully!");
     }
 }
