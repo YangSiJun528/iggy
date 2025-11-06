@@ -40,9 +40,11 @@ Wireshark Lua 기반 Dissector로 iggy 프로토콜의 바이너리 통신(TCP/Q
    ```bash
    # macOS
    cp iggy_dissector.lua ~/.local/lib/wireshark/plugins/
+   rm ~/.local/lib/wireshark/plugins/iggy_dissector.lua
 
    # Linux
    cp iggy_dissector.lua ~/.local/lib/wireshark/plugins/
+   rm ~/.local/lib/wireshark/plugins/iggy_dissector.lua
 
    # Windows
    copy iggy_dissector.lua %APPDATA%\Wireshark\plugins\

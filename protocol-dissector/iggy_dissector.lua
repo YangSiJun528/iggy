@@ -173,7 +173,7 @@ local function dissect_identifier(tvbuf, tree, offset, pktlen, label, id_fields)
         return nil
     end
 
-    local kind_name = (kind == 1) and "Numeric" or (kind == 2) and "String" or "Unknown" --TODO: 이거는 구분 안해도 될 듯? 굳이? 실제로 프로토콜 구분하는거면 몰라
+    local kind_name = (kind == 1) and "Numeric" or (kind == 2) and "String" or "Unknown"
     local id_tree = tree:add(string.format("%s: %s (%d bytes)", label, kind_name, length))
 
     id_tree:add(id_fields.kind, tvbuf:range(offset, 1))
