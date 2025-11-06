@@ -1,6 +1,6 @@
 -- Protocol dissection logic module for Iggy Protocol Dissector
 
-local protocol = {}
+local dissectorr = {}
 
 -- Dependencies
 local constants = require("iggy.constants")
@@ -11,17 +11,17 @@ local types = require("iggy.types")
 ----------------------------------------
 -- Expert info
 ----------------------------------------
-protocol.ef_invalid_length = ProtoExpert.new("iggy.invalid_length.expert",
+dissectorr.ef_invalid_length = ProtoExpert.new("iggy.invalid_length.expert",
                                              "Invalid length field",
                                              expert.group.MALFORMED, expert.severity.WARN)
-protocol.ef_error_status   = ProtoExpert.new("iggy.error_status.expert",
+dissectorr.ef_error_status   = ProtoExpert.new("iggy.error_status.expert",
                                              "Error response",
                                              expert.group.RESPONSE_CODE, expert.severity.WARN)
 
 ----------------------------------------
 -- Helper: Detect if packet is request or response
 ----------------------------------------
-function protocol.detect_message_type(tvbuf)
+function dissectorr.detect_message_type(tvbuf)
     local pktlen = tvbuf:len()
     if pktlen < 8 then
         return nil
@@ -74,7 +74,7 @@ end
 ----------------------------------------
 -- Request dissector
 ----------------------------------------
-function protocol.dissect_request(tvbuf, pktinfo, tree, iggy_proto)
+function dissectorr.dissect_request(tvbuf, pktinfo, tree, iggy_proto)
     local pktlen = tvbuf:len()
 
     -- Check minimum length
@@ -127,7 +127,7 @@ function protocol.dissect_request(tvbuf, pktinfo, tree, iggy_proto)
     -- Validate length
     local expected_length = 4 + payload_len
     if msg_length ~= expected_length then
-        subtree:add_proto_expert_info(protocol.ef_invalid_length,
+        subtree:add_proto_expert_info(dissectorr.ef_invalid_length,
             string.format("Length mismatch: field=%d, expected=%d", msg_length, expected_length))
     end
 
@@ -137,7 +137,7 @@ end
 ----------------------------------------
 -- Response dissector
 ----------------------------------------
-function protocol.dissect_response(tvbuf, pktinfo, tree, iggy_proto)
+function dissectorr.dissect_response(tvbuf, pktinfo, tree, iggy_proto)
     local pktlen = tvbuf:len()
 
     -- Check minimum length
@@ -183,17 +183,17 @@ function protocol.dissect_response(tvbuf, pktinfo, tree, iggy_proto)
     else
         pktinfo.cols.info:set(string.format("Response: %s (status=%d, length=%d)",
                                             status_name, status, msg_length))
-        subtree:add_proto_expert_info(protocol.ef_error_status,
+        subtree:add_proto_expert_info(dissectorr.ef_error_status,
             string.format("Error status: %d", status))
     end
 
     -- Validate: error responses should have length=0
     if status ~= 0 and msg_length ~= 0 then
-        subtree:add_proto_expert_info(protocol.ef_invalid_length,
+        subtree:add_proto_expert_info(dissectorr.ef_invalid_length,
             "Error response should have length=0")
     end
 
     return total_len
 end
 
-return protocol
+return dissectorr
