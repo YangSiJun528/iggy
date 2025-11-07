@@ -91,7 +91,132 @@
 - **Payload**: Consumer + stream_id + topic_id + partition_id + strategy + count + auto_commit
 - **코드**: `core/common/src/commands/messages/poll_messages.rs:138-206`
 
-### 3.2 응답 Payload 파싱 ⚠️ 중요!
+### 3.2 요청과 응답 매핑 ⚠️ 핵심!
+
+**응답 헤더에는 command code가 없습니다!**
+
+응답 포맷(`status + length + payload`)에는 어떤 요청에 대한 응답인지 식별할 수 있는 코드가 없습니다.
+그럼 클라이언트는 어떻게 올바른 mapper 함수를 호출할까요?
+
+#### 요청-응답 매핑 원리
+
+**IGGY는 병렬 요청을 지원하지 않습니다!**
+
+클라이언트는 Mutex lock을 사용하여 **순차적으로만** 요청/응답을 처리합니다.
+따라서 응답은 항상 마지막으로 보낸 요청에 대한 것임이 보장됩니다.
+
+```rust
+// core/sdk/src/tcp/tcp_client.rs:485-550 (핵심 로직 요약)
+async fn send_raw(&self, code: u32, payload: Bytes) -> Result<Bytes, IggyError> {
+    let stream = self.stream.clone();  // Arc<Mutex<TcpStream>>
+    tokio::spawn(async move {
+        let mut stream = stream.lock().await;  // 1. Lock 획득 (다른 요청 차단)
+
+        // 2. 요청 전송
+        stream.write(&length.to_le_bytes()).await?;
+        stream.write(&code.to_le_bytes()).await?;
+        stream.write(&payload).await?;
+
+        // 3. Lock을 유지한 채로 응답 대기 (다른 요청은 여전히 대기 중)
+        let mut response_buffer = [0u8; 8];
+        stream.read(&mut response_buffer).await?;
+
+        // 4. 응답 파싱 완료
+        return handle_response(status, length, stream).await;
+        // 5. 함수 종료 시 lock 해제 → 다음 요청 가능
+    }).await?
+}
+```
+
+**시나리오 예시**:
+```
+시간축 →
+
+Thread A: [Lock 획득] → [요청1 전송] → [응답1 대기...] → [응답1 수신] → [Lock 해제]
+                                         ↑
+Thread B:           [Lock 대기................] → [Lock 획득] → [요청2 전송] →
+```
+
+**중요**: Kafka 같은 시스템은 correlation ID로 비순차 응답을 지원하지만, **IGGY는 순차 처리만 지원**합니다.
+- ✅ 장점: 구현 단순, 응답 매칭 명확 (correlation ID 불필요)
+- ❌ 단점: 처리량 제한 (파이프라이닝 없음), 한 요청이 느리면 모든 후속 요청 대기
+
+```rust
+// core/binary_protocol/src/client/binary_users/mod.rs:132-144
+async fn login_user(&self, username: &str, password: &str) -> Result<IdentityInfo, IggyError> {
+    let response = self
+        .send_with_response(&LoginUser {  // ← LoginUser 요청 전송
+            username: username.to_string(),
+            password: password.to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            context: Some("".to_string()),
+        })
+        .await?;
+    mapper::map_identity_info(response)  // ← map_identity_info()로 응답 파싱
+}
+```
+
+#### 요청 Command → 응답 Mapper 매핑표
+
+| 요청 Command | Code | 응답 Mapper 함수 | 파일 위치 (client) |
+|-------------|------|----------------|------------------|
+| LoginUser | 38 | `map_identity_info()` | `binary_users/mod.rs:143` |
+| GetStats | 10 | `map_stats()` | `binary_system/mod.rs:37` |
+| GetStream | 200 | `map_stream()` | `binary_streams/mod.rs:43` |
+| CreateStream | 202 | `map_stream()` | `binary_streams/mod.rs:64` |
+| GetMe | 20 | `map_client()` | `binary_system/mod.rs:43` |
+| GetClient | 21 | `map_client()` | `binary_system/mod.rs:53` |
+| GetUser | 30 | `map_user()` | `binary_users/mod.rs:49` |
+| CreateUser | 31 | `map_user()` | `binary_users/mod.rs:74` |
+
+**패턴**: 같은 데이터 구조를 반환하는 command는 같은 mapper 함수를 사용합니다.
+(예: `CreateStream`과 `GetStream` 모두 `StreamDetails`를 반환하므로 `map_stream()` 사용)
+
+#### Lua Dissector 구현 시 고려사항
+
+**좋은 소식**: 순차 처리 덕분에 구현이 매우 단순합니다!
+
+1. **TCP 스트림별로 마지막 요청만 추적**
+   - Wireshark의 `pinfo.number` 또는 TCP 스트림 ID 사용
+   - 각 TCP 연결마다 "마지막 요청 코드" 하나만 저장하면 됨
+   - 큐나 correlation table 불필요 (순차 처리 보장)
+
+2. **방향 구분**
+   - 요청: 클라이언트 → 서버 (destination port = 서버 포트)
+   - 응답: 서버 → 클라이언트 (source port = 서버 포트)
+   - 서버 포트는 설정으로 지정 (기본값: 8090)
+
+3. **요청 파싱 시**
+   ```lua
+   local code = buffer(4, 4):le_uint()
+   -- 단순히 덮어쓰기만 하면 됨 (순차 처리 보장)
+   stream_requests[stream_id] = code
+   ```
+
+4. **응답 파싱 시**
+   ```lua
+   local status = buffer(0, 4):le_uint()
+   -- 항상 마지막 요청에 대한 응답
+   local request_code = stream_requests[stream_id]
+   if request_code == 38 then  -- LoginUser
+       parse_identity_info(payload)
+   elseif request_code == 200 then  -- GetStream
+       parse_stream_details(payload)
+   end
+   ```
+
+5. **주의사항**
+   - TCP 재전송 패킷은 Wireshark가 자동으로 표시하므로 별도 처리 불필요
+   - 패킷 손실/재조립은 Wireshark의 TCP dissector가 처리
+   - 다만, 초기 구현에서는 TCP 세그먼트 재조립 생략 가능 (4.5절 참고)
+
+**참고 파일**: 각 클라이언트 구현 파일에서 요청-mapper 매핑 확인
+- `core/binary_protocol/src/client/binary_system/mod.rs`
+- `core/binary_protocol/src/client/binary_streams/mod.rs`
+- `core/binary_protocol/src/client/binary_users/mod.rs`
+- `core/binary_protocol/src/client/binary_messages/mod.rs`
+
+### 3.3 응답 Payload 파싱 ⚠️ 중요!
 
 **응답은 BytesSerializable를 사용하지 않습니다!**
 
@@ -109,7 +234,7 @@
 
 **Lua 구현 시에는 클라이언트 mapper를 참고해야 합니다!**
 
-#### 예시: LoginUser 응답 (Code: 38) - 가장 단순
+#### 예시 1: LoginUser 응답 (Code: 38) - 가장 단순
 ```rust
 // core/binary_protocol/src/utils/mapper.rs:455-465
 pub fn map_identity_info(payload: Bytes) -> Result<IdentityInfo, IggyError> {
@@ -119,7 +244,7 @@ pub fn map_identity_info(payload: Bytes) -> Result<IdentityInfo, IggyError> {
 ```
 - user_id (4 bytes, u32, little-endian)만 파싱
 
-#### 예시: GetStream 응답 (Code: 200) - 중간
+#### 예시 2: GetStream 응답 (Code: 200) - 중간
 ```rust
 // core/binary_protocol/src/utils/mapper.rs:552-573
 pub fn map_stream(payload: Bytes) -> Result<StreamDetails, IggyError> {
@@ -133,7 +258,7 @@ pub fn map_stream(payload: Bytes) -> Result<StreamDetails, IggyError> {
 - name: length(1B) + data 패턴
 - topics: 반복 구조
 
-#### 예시: GetStats 응답 (Code: 10) - 복잡
+#### 예시 3: GetStats 응답 (Code: 10) - 복잡
 ```rust
 // core/binary_protocol/src/utils/mapper.rs:37-350
 pub fn map_stats(payload: Bytes) -> Result<Stats, IggyError> {
@@ -154,7 +279,7 @@ pub fn map_stats(payload: Bytes) -> Result<Stats, IggyError> {
 - 가변 필드: length(4B) + data
 - 반복 필드: count(4B) + entries
 
-### 3.3 공통 데이터 타입
+### 3.4 공통 데이터 타입
 
 요청/응답 payload에 자주 등장하는 타입들입니다.
 
@@ -234,21 +359,30 @@ pub fn map_stats(payload: Bytes) -> Result<Stats, IggyError> {
 
 ### 5.1 새로운 Command 구현하기
 
-#### 요청 파싱
+#### 1단계: 요청-응답 매핑 확인
 ```
 1. Command 코드 확인 (예: 200 = GET_STREAM)
-2. 구현 코드 찾기
-   → core/common/src/commands/streams/get_stream.rs
-3. BytesSerializable::to_bytes() 구현 확인
-4. Lua로 동일한 순서로 파싱
+   → core/common/src/types/command/mod.rs
+2. 클라이언트 구현 찾기
+   → core/binary_protocol/src/client/binary_streams/mod.rs:32-44
+3. 어떤 mapper 함수를 사용하는지 확인
+   → get_stream() 메서드에서 mapper::map_stream() 호출
 ```
 
-#### 응답 파싱
+#### 2단계: 요청 Payload 파싱
+```
+1. 요청 struct 구현 찾기
+   → core/common/src/commands/streams/get_stream.rs
+2. BytesSerializable::to_bytes() 구현 확인
+3. Lua로 동일한 순서로 파싱
+```
+
+#### 3단계: 응답 Payload 파싱
 ```
 1. 클라이언트 mapper 함수 찾기
    → core/binary_protocol/src/utils/mapper.rs
    → map_stream() 함수
-2. 바이트 파싱 로직 분석
+2. 바이트 파싱 로직 분석 (고정 offset, 가변 필드, 반복 구조 등)
 3. Lua로 동일한 순서로 파싱
 ```
 
