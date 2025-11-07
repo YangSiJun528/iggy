@@ -2,16 +2,6 @@
 -- Supports Request/Response detection with extensible command registry
 
 ----------------------------------------
--- Setup module path
-----------------------------------------
--- Get the directory where this script is located
-local script_path = debug.getinfo(1, "S").source:sub(2)
-local script_dir = script_path:match("(.*/)")
-if script_dir then
-    package.path = script_dir .. "?.lua;" .. script_dir .. "?/init.lua;" .. package.path
-end
-
-----------------------------------------
 -- Load modules
 ----------------------------------------
 local fields = require("iggy.fields")
@@ -21,6 +11,11 @@ local iggy_module = require("iggy.iggy")
 -- Protocol definition
 ----------------------------------------
 local iggy = Proto("iggy", "Iggy Protocol")
+
+----------------------------------------
+-- Preferences
+----------------------------------------
+iggy.prefs.port = Pref.uint("TCP Port", 8090, "IGGY server port number")
 
 ----------------------------------------
 -- Register all protocol fields
@@ -35,6 +30,11 @@ iggy.experts = {
     iggy_module.ef_invalid_length,
     iggy_module.ef_error_status,
 }
+
+----------------------------------------
+-- Port registration tracking
+----------------------------------------
+local current_port = 0
 
 ----------------------------------------
 -- Main dissector
@@ -56,23 +56,17 @@ function iggy.dissector(tvbuf, pktinfo, root)
 end
 
 ----------------------------------------
--- Heuristic dissector
+-- Initialization function (called when preferences change)
 ----------------------------------------
-local function heur_dissect_iggy(tvbuf, pktinfo, root)
-    if tvbuf:len() < 8 then
-        return false
+function iggy.init()
+    local tcp_port = DissectorTable.get("tcp.port")
+
+    -- Remove old port registration if exists
+    if current_port > 0 then
+        tcp_port:remove(current_port, iggy)
     end
 
-    local msg_type = iggy_module.detect_message_type(tvbuf)
-
-    if not msg_type then
-        return false
-    end
-
-    iggy.dissector(tvbuf, pktinfo, root)
-    pktinfo.conversation = iggy
-
-    return true
+    -- Register new port
+    current_port = iggy.prefs.port
+    tcp_port:add(current_port, iggy)
 end
-
-iggy:register_heuristic("tcp", heur_dissect_iggy)

@@ -26,7 +26,7 @@ fields.pf_id_value_str = ProtoField.string("iggy.identifier.value_str", "Value (
 -- Common data type: Consumer
 fields.pf_consumer_kind = ProtoField.uint8("iggy.consumer.kind", "Kind", base.DEC)
 
--- Command 38: LoginUser
+-- Command 38: LoginUser (Request)
 fields.pf_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
 fields.pf_login_username     = ProtoField.string("iggy.login.username", "Username")
 fields.pf_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
@@ -36,9 +36,8 @@ fields.pf_login_version      = ProtoField.string("iggy.login.version", "Version"
 fields.pf_login_context_len  = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
 fields.pf_login_context      = ProtoField.string("iggy.login.context", "Context")
 
--- Command 121: StoreConsumerOffset
-fields.pf_store_offset_partition_id = ProtoField.uint32("iggy.store_offset.partition_id", "Partition ID", base.DEC)
-fields.pf_store_offset_offset       = ProtoField.uint64("iggy.store_offset.offset", "Offset", base.DEC)
+-- Command 38: LoginUser (Response)
+fields.pf_login_user_id = ProtoField.uint32("iggy.login.user_id", "User ID", base.DEC)
 
 ----------------------------------------
 -- Field structure helpers (for command declarations)
@@ -76,12 +75,12 @@ function fields.get_all()
         fields.pf_id_kind, fields.pf_id_length, fields.pf_id_value_num, fields.pf_id_value_str,
         fields.pf_consumer_kind,
 
-        -- Command-specific fields
+        -- Command-specific fields: LoginUser (38)
         fields.pf_login_username_len, fields.pf_login_username,
         fields.pf_login_password_len, fields.pf_login_password,
         fields.pf_login_version_len, fields.pf_login_version,
         fields.pf_login_context_len, fields.pf_login_context,
-        fields.pf_store_offset_partition_id, fields.pf_store_offset_offset,
+        fields.pf_login_user_id,
     }
 end
 

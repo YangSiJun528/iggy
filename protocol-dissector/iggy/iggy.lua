@@ -8,6 +8,13 @@ local utils = require("iggy.utils")
 local status_codes = require("iggy.status_codes")
 
 ----------------------------------------
+-- TCP stream tracking
+----------------------------------------
+-- Track last request code per TCP stream for request-response matching
+local stream_requests = {}
+local tcp_stream_field = Field.new("tcp.stream")
+
+----------------------------------------
 -- Protocol constants
 ----------------------------------------
 local IGGY_MIN_HEADER_LEN = 8  -- Minimum: LENGTH(4) + CODE/STATUS(4)
@@ -107,85 +114,43 @@ end
 
 ----------------------------------------
 -- Command Registry
--- Each command has: name, fields (ProtoFields), dissect_payload function
+-- Each command has:
+--   - name: Command name (string)
+--   - request_dissector: function(tvbuf, tree, offset, pktlen) or nil
+--   - response_dissector: function(tvbuf, tree, offset, pktlen) or nil
 ----------------------------------------
 local commands = {
     [1] = {
         name = "Ping",
-        fields = {},
-        dissect_payload = nil,  -- No payload
-    },
-    [10] = {
-        name = "GetStats",
-        fields = {},
-        dissect_payload = nil,  -- No payload
+        request_dissector = nil,   -- No request payload
+        response_dissector = nil,  -- No response payload
     },
     [38] = {
         name = "LoginUser",
-        fields = {
-            username_len = fields.pf_login_username_len,
-            username     = fields.pf_login_username,
-            password_len = fields.pf_login_password_len,
-            password     = fields.pf_login_password,
-            version_len  = fields.pf_login_version_len,
-            version      = fields.pf_login_version,
-            context_len  = fields.pf_login_context_len,
-            context      = fields.pf_login_context,
-        },
-        dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
-            local pktlen = offset + payload_len
-
+        request_dissector = function(tvbuf, tree, offset, pktlen)
             -- Username (u8 length + string)
-            offset = utils.dissect_string_with_u8_len(tvbuf, payload_tree, offset, pktlen,
-                self.fields.username_len, self.fields.username)
+            offset = utils.dissect_string_with_u8_len(tvbuf, tree, offset, pktlen,
+                fields.pf_login_username_len, fields.pf_login_username)
             if not offset then return end
 
             -- Password (u8 length + string)
-            offset = utils.dissect_string_with_u8_len(tvbuf, payload_tree, offset, pktlen,
-                self.fields.password_len, self.fields.password)
+            offset = utils.dissect_string_with_u8_len(tvbuf, tree, offset, pktlen,
+                fields.pf_login_password_len, fields.pf_login_password)
             if not offset then return end
 
-            -- Version (u32 length + string)
-            offset = utils.dissect_string_with_u32_le_len(tvbuf, payload_tree, offset, pktlen,
-                self.fields.version_len, self.fields.version)
+            -- Version (u32 length + string, optional)
+            offset = utils.dissect_string_with_u32_le_len(tvbuf, tree, offset, pktlen,
+                fields.pf_login_version_len, fields.pf_login_version)
             if not offset then return end
 
-            -- Context (u32 length + string)
-            offset = utils.dissect_string_with_u32_le_len(tvbuf, payload_tree, offset, pktlen,
-                self.fields.context_len, self.fields.context)
+            -- Context (u32 length + string, optional)
+            offset = utils.dissect_string_with_u32_le_len(tvbuf, tree, offset, pktlen,
+                fields.pf_login_context_len, fields.pf_login_context)
             if not offset then return end
         end,
-    },
-    [121] = {
-        name = "StoreConsumerOffset",
-        fields = {
-            consumer     = fields.make_consumer_fields(),
-            stream_id    = fields.make_identifier_fields(),
-            topic_id     = fields.make_identifier_fields(),
-            partition_id = fields.pf_store_offset_partition_id,
-            offset       = fields.pf_store_offset_offset,
-        },
-        dissect_payload = function(self, tvbuf, payload_tree, offset, payload_len)
-            local pktlen = offset + payload_len
-
-            -- Consumer (common data type)
-            offset = dissect_consumer(tvbuf, payload_tree, offset, pktlen, "Consumer", self.fields.consumer)
-            if not offset then return end
-
-            -- Stream ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Stream ID", self.fields.stream_id)
-            if not offset then return end
-
-            -- Topic ID (common data type)
-            offset = dissect_identifier(tvbuf, payload_tree, offset, pktlen, "Topic ID", self.fields.topic_id)
-            if not offset then return end
-
-            -- Partition ID (u32, 0 = None)
-            offset = utils.dissect_u32_le(tvbuf, payload_tree, offset, self.fields.partition_id, pktlen)
-            if not offset then return end
-
-            -- Offset (u64)
-            offset = utils.dissect_u64_le(tvbuf, payload_tree, offset, self.fields.offset, pktlen)
+        response_dissector = function(tvbuf, tree, offset, pktlen)
+            -- User ID (u32)
+            offset = utils.dissect_u32_le(tvbuf, tree, offset, fields.pf_login_user_id, pktlen)
             if not offset then return end
         end,
     },
@@ -287,10 +252,17 @@ local function dissect_request(tvbuf, pktinfo, tree, iggy_proto)
     if payload_len > 0 then
         local payload_tree = subtree:add(fields.pf_req_payload, tvbuf:range(8, payload_len))
 
-        -- Use command-specific payload dissector if available
-        if command_info and command_info.dissect_payload then
-            command_info.dissect_payload(command_info, tvbuf, payload_tree, 8, payload_len)
+        -- Use command-specific request dissector if available
+        if command_info and command_info.request_dissector then
+            local pktlen = 8 + payload_len
+            command_info.request_dissector(tvbuf, payload_tree, 8, pktlen)
         end
+    end
+
+    -- Track request code for request-response matching
+    local tcp_stream = tcp_stream_field()
+    if tcp_stream then
+        stream_requests[tcp_stream.value] = command_code
     end
 
     -- Update info column
@@ -347,7 +319,24 @@ local function dissect_response(tvbuf, pktinfo, tree, iggy_proto)
     -- PAYLOAD
     local payload_len = total_len - 8
     if payload_len > 0 then
-        subtree:add(fields.pf_resp_payload, tvbuf:range(8, payload_len))
+        local payload_tree = subtree:add(fields.pf_resp_payload, tvbuf:range(8, payload_len))
+
+        -- Get last request code for this TCP stream
+        local tcp_stream = tcp_stream_field()
+        local command_code = tcp_stream and stream_requests[tcp_stream.value]
+        local command_info = command_code and commands[command_code]
+
+        if command_info then
+            subtree:add(fields.pf_req_code_name, command_info.name):set_generated()
+
+            -- Use command-specific response dissector if available
+            if status == 0 and command_info.response_dissector then
+                local pktlen = 8 + payload_len
+                command_info.response_dissector(tvbuf, payload_tree, 8, pktlen)
+            end
+        else
+            subtree:add("Request not captured or unknown"):set_generated()
+        end
     end
 
     -- Update info column
