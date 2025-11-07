@@ -1,3 +1,6 @@
+-- Iggy Protocol Dissector
+-- Supports Request/Response detection with extensible command registry
+
 local iggy = Proto("iggy", "Iggy Protocol")
 
 ----------------------------------------
@@ -23,37 +26,27 @@ local f_resp_status_name = ProtoField.string("iggy.response.status_name", "Statu
 local f_resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload")
 local f_resp_payload = ProtoField.bytes("iggy.response.payload", "Payload")
 
+-- LoginUser (38) - Request fields
+local f_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
+local f_login_username = ProtoField.string("iggy.login.username", "Username")
+local f_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
+local f_login_password = ProtoField.string("iggy.login.password", "Password")
+local f_login_version_len = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC)
+local f_login_version = ProtoField.string("iggy.login.version", "Version")
+local f_login_context_len = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
+local f_login_context = ProtoField.string("iggy.login.context", "Context")
+
+-- LoginUser (38) - Response fields
+local f_login_user_id = ProtoField.uint32("iggy.login.user_id", "User ID", base.DEC)
+
 iggy.fields = {
     f_message_type,
     f_req_length, f_req_command, f_req_command_name, f_req_payload,
-    f_resp_status, f_resp_status_name, f_resp_length, f_resp_payload
-}
-
-----------------------------------------
--- Command Registry
-----------------------------------------
-local COMMANDS = {
-    [1] = {
-        name = "Ping",
-        dissect_request = nil,  -- No payload
-    },
-    [10] = {
-        name = "GetStats",
-        dissect_response = nil,
-    },
-}
-
-----------------------------------------
--- Status Code Registry
-----------------------------------------
-local STATUS_CODES = {
-    [0] = "OK",
-    [1] = "InvalidCommand",
-    [2] = "Unauthenticated",
-    [3] = "Unauthorized",
-    [10] = "InvalidFormat",
-    [11] = "InvalidRequest",
-    -- Add more status codes as needed
+    f_resp_status, f_resp_status_name, f_resp_length, f_resp_payload,
+    -- LoginUser fields
+    f_login_username_len, f_login_username, f_login_password_len, f_login_password,
+    f_login_version_len, f_login_version, f_login_context_len, f_login_context,
+    f_login_user_id,
 }
 
 ----------------------------------------
@@ -64,6 +57,129 @@ local ef_invalid_length = ProtoExpert.new("iggy.invalid_length", "Invalid length
 local ef_error_status = ProtoExpert.new("iggy.error_status", "Error response", expert.group.RESPONSE_CODE, expert.severity.WARN)
 
 iggy.experts = { ef_too_short, ef_invalid_length, ef_error_status }
+
+----------------------------------------
+-- Helper functions
+----------------------------------------
+
+-- Read u8
+local function read_u8(buffer, offset)
+    if offset + 1 > buffer:len() then
+        return nil
+    end
+    return buffer(offset, 1):uint()
+end
+
+-- Read u32 (little-endian)
+local function read_u32_le(buffer, offset)
+    if offset + 4 > buffer:len() then
+        return nil
+    end
+    return buffer(offset, 4):le_uint()
+end
+
+-- Dissect string with u8 length prefix
+-- Returns new offset or nil on error
+local function dissect_string_u8_len(buffer, tree, offset, len_field, str_field)
+    local buflen = buffer:len()
+    if offset + 1 > buflen then
+        return nil
+    end
+
+    local str_len = buffer(offset, 1):uint()
+    tree:add(len_field, buffer(offset, 1))
+
+    if offset + 1 + str_len > buflen then
+        return nil
+    end
+
+    if str_len > 0 then
+        tree:add(str_field, buffer(offset + 1, str_len))
+    end
+
+    return offset + 1 + str_len
+end
+
+-- Dissect string with u32 length prefix (little-endian)
+-- Returns new offset or nil on error
+local function dissect_string_u32_le_len(buffer, tree, offset, len_field, str_field)
+    local buflen = buffer:len()
+    if offset + 4 > buflen then
+        return nil
+    end
+
+    local str_len = buffer(offset, 4):le_uint()
+    tree:add_le(len_field, buffer(offset, 4))
+
+    if offset + 4 + str_len > buflen then
+        return nil
+    end
+
+    if str_len > 0 then
+        tree:add(str_field, buffer(offset + 4, str_len))
+    end
+
+    return offset + 4 + str_len
+end
+
+----------------------------------------
+-- TCP stream tracking for request-response matching
+----------------------------------------
+local stream_requests = {}
+local tcp_stream_field = Field.new("tcp.stream")
+
+----------------------------------------
+-- Command Registry
+-- Each command has:
+--   - name: Command name (string)
+--   - request_dissector: function(buffer, tree, offset) or nil
+--   - response_dissector: function(buffer, tree, offset) or nil
+----------------------------------------
+local COMMANDS = {
+    [1] = {
+        name = "Ping",
+        request_dissector = nil,   -- No request payload
+        response_dissector = nil,  -- No response payload
+    },
+    [38] = {
+        name = "LoginUser",
+        request_dissector = function(buffer, tree, offset)
+            -- Username (u8 length + string)
+            offset = dissect_string_u8_len(buffer, tree, offset, f_login_username_len, f_login_username)
+            if not offset then return end
+
+            -- Password (u8 length + string)
+            offset = dissect_string_u8_len(buffer, tree, offset, f_login_password_len, f_login_password)
+            if not offset then return end
+
+            -- Version (u32 length + string, optional)
+            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_version_len, f_login_version)
+            if not offset then return end
+
+            -- Context (u32 length + string, optional)
+            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_context_len, f_login_context)
+            if not offset then return end
+        end,
+        response_dissector = function(buffer, tree, offset)
+            local buflen = buffer:len()
+            if offset + 4 > buflen then
+                return
+            end
+
+            -- User ID (u32, little-endian)
+            tree:add_le(f_login_user_id, buffer(offset, 4))
+        end,
+    },
+}
+
+----------------------------------------
+-- Status Code Registry
+----------------------------------------
+local STATUS_CODES = {
+    [0] = "OK",
+    [2] = "Unauthenticated",
+    -- Add more status codes as needed
+}
 
 ----------------------------------------
 -- Helper: Detect message type
@@ -103,6 +219,12 @@ local function detect_message_type(buffer)
         if expected_total == buflen then
             return "response"
         end
+    end
+
+    -- Additional heuristic for responses with unknown status codes
+    local expected_total = 8 + second_field
+    if expected_total == buflen and second_field < 1000000 then
+        return "response"
     end
 
     return nil
@@ -145,10 +267,16 @@ local function dissect_request(buffer, pinfo, tree)
     if payload_len > 0 then
         local payload_tree = subtree:add(f_req_payload, buffer(8, payload_len))
 
-        -- Use command-specific dissector if available
-        if command_info and command_info.dissect_request then
-            command_info.dissect_request(buffer, payload_tree, 8, payload_len)
+        -- Use command-specific request dissector if available
+        if command_info and command_info.request_dissector then
+            command_info.request_dissector(buffer, payload_tree, 8)
         end
+    end
+
+    -- Track request code for request-response matching
+    local tcp_stream = tcp_stream_field()
+    if tcp_stream then
+        stream_requests[tcp_stream.value] = command_code
     end
 
     -- Update info column
@@ -198,7 +326,23 @@ local function dissect_response(buffer, pinfo, tree)
     -- Payload
     local payload_len = total_len - 8
     if payload_len > 0 then
-        subtree:add(f_resp_payload, buffer(8, payload_len))
+        local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
+
+        -- Get last request code for this TCP stream
+        local tcp_stream = tcp_stream_field()
+        local command_code = tcp_stream and stream_requests[tcp_stream.value]
+        local command_info = command_code and COMMANDS[command_code]
+
+        if command_info then
+            subtree:add(f_req_command_name, command_info.name):set_generated()
+
+            -- Use command-specific response dissector if available (only for success responses)
+            if status == 0 and command_info.response_dissector then
+                command_info.response_dissector(buffer, payload_tree, 8)
+            end
+        else
+            subtree:add("Request not captured or unknown"):set_generated()
+        end
     end
 
     -- Update info column
@@ -220,8 +364,6 @@ end
 ----------------------------------------
 -- Main dissector
 ----------------------------------------
-local TCP_PORT = iggy.prefs.server_port
-
 function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
 
@@ -249,26 +391,21 @@ function iggy.dissector(buffer, pinfo, tree)
 end
 
 ----------------------------------------
--- Register dissector via preferences
+-- Port registration management
 ----------------------------------------
-function iggy.prefs_changed()
-    local new_port = iggy.prefs.server_port
+local current_port = 0
 
-    if TCP_PORT ~= new_port then
-        if TCP_PORT ~= 0 then
-            DissectorTable.get("tcp.port"):remove(TCP_PORT, iggy)
-        end
-        TCP_PORT = new_port
+function iggy.init()
+    local tcp_port = DissectorTable.get("tcp.port")
 
-        if TCP_PORT ~= 0 then
-            DissectorTable.get("tcp.port"):add(TCP_PORT, iggy)
-        end
+    -- Remove old port registration if exists
+    if current_port > 0 then
+        tcp_port:remove(current_port, iggy)
     end
-end
 
-----------------------------------------
--- Initial registration
-----------------------------------------
-if TCP_PORT ~= 0 then
-    DissectorTable.get("tcp.port"):add(TCP_PORT, iggy)
+    -- Register new port
+    current_port = iggy.prefs.server_port
+    if current_port > 0 then
+        tcp_port:add(current_port, iggy)
+    end
 end
