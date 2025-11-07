@@ -12,39 +12,37 @@ local IGGY_MIN_HEADER_LEN = 8  -- Minimum: LENGTH(4) + CODE/STATUS(4)
 -- Common Protocol fields (used across all messages)
 ----------------------------------------
 -- Base message fields
-local pf_message_type   = ProtoField.string("iggy.message_type", "Message Type")
-local pf_req_length     = ProtoField.uint32("iggy.request.length", "Length", base.DEC)
-local pf_req_code       = ProtoField.uint32("iggy.request.code", "Command Code", base.DEC)
-local pf_req_code_name  = ProtoField.string("iggy.request.code_name", "Command Name")
-local pf_req_payload    = ProtoField.bytes("iggy.request.payload", "Payload")
+local pf_message_type     = ProtoField.string("iggy.message_type", "Message Type")
+local pf_request_length   = ProtoField.uint32("iggy.request.length", "Request Length", base.DEC)
+local pf_request_code     = ProtoField.uint32("iggy.request.code", "Request Command Code", base.DEC)
+local pf_request_code_name = ProtoField.string("iggy.request.code_name", "Request Command Name")
+local pf_request_payload  = ProtoField.bytes("iggy.request.payload", "Request Payload")
 
-local pf_resp_status      = ProtoField.uint32("iggy.response.status", "Status", base.DEC)
-local pf_resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name")
-local pf_resp_length      = ProtoField.uint32("iggy.response.length", "Length", base.DEC)
-local pf_resp_payload     = ProtoField.bytes("iggy.response.payload", "Payload")
+local pf_response_status      = ProtoField.uint32("iggy.response.status", "Response Status", base.DEC)
+local pf_response_status_name = ProtoField.string("iggy.response.status_name", "Response Status Name")
+local pf_response_length      = ProtoField.uint32("iggy.response.length", "Response Length", base.DEC)
+local pf_response_payload     = ProtoField.bytes("iggy.response.payload", "Response Payload")
 
--- Common data type: Identifier
-local pf_id_kind      = ProtoField.uint8("iggy.identifier.kind", "Kind", base.DEC)
-local pf_id_length    = ProtoField.uint8("iggy.identifier.length", "Length", base.DEC)
-local pf_id_value_num = ProtoField.uint32("iggy.identifier.value_num", "Value (Numeric)", base.DEC)
-local pf_id_value_str = ProtoField.string("iggy.identifier.value_str", "Value (String)")
-
--- Common data type: Consumer
-local pf_consumer_kind = ProtoField.uint8("iggy.consumer.kind", "Kind", base.DEC)
+-- Common data types
+local pf_shared_identifier_kind         = ProtoField.uint8("iggy.payload.shared.identifier.kind", "Identifier Kind (Payload Shared)", base.DEC)
+local pf_shared_identifier_length       = ProtoField.uint8("iggy.payload.shared.identifier.length", "Identifier Length (Payload Shared)", base.DEC)
+local pf_shared_identifier_value_numeric = ProtoField.uint32("iggy.payload.shared.identifier.value_numeric", "Identifier Value (Numeric, Payload Shared)", base.DEC)
+local pf_shared_identifier_value_string = ProtoField.string("iggy.payload.shared.identifier.value_string", "Identifier Value (String, Payload Shared)")
+local pf_shared_consumer_kind = ProtoField.uint8("iggy.payload.shared.consumer.kind", "Consumer Kind (Payload Shared)", base.DEC)
 
 -- Command 38: LoginUser
-local pf_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
-local pf_login_username     = ProtoField.string("iggy.login.username", "Username")
-local pf_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
-local pf_login_password     = ProtoField.string("iggy.login.password", "Password")
-local pf_login_version_len  = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC)
-local pf_login_version      = ProtoField.string("iggy.login.version", "Version")
-local pf_login_context_len  = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
-local pf_login_context      = ProtoField.string("iggy.login.context", "Context")
+local pf_payload_login_username_length = ProtoField.uint8("iggy.payload.request.login.username_length", "Username Length", base.DEC)
+local pf_payload_login_username        = ProtoField.string("iggy.payload.request.login.username", "Username")
+local pf_payload_login_password_length = ProtoField.uint8("iggy.payload.request.login.password_length", "Password Length", base.DEC)
+local pf_payload_login_password        = ProtoField.string("iggy.payload.request.login.password", "Password")
+local pf_payload_login_version_length  = ProtoField.uint32("iggy.payload.request.login.version_length", "Version Length", base.DEC)
+local pf_payload_login_version         = ProtoField.string("iggy.payload.request.login.version", "Version")
+local pf_payload_login_context_length  = ProtoField.uint32("iggy.payload.request.login.context_length", "Context Length", base.DEC)
+local pf_payload_login_context         = ProtoField.string("iggy.payload.request.login.context", "Context")
 
 -- Command 121: StoreConsumerOffset
-local pf_store_offset_partition_id = ProtoField.uint32("iggy.store_offset.partition_id", "Partition ID", base.DEC)
-local pf_store_offset_offset       = ProtoField.uint64("iggy.store_offset.offset", "Offset", base.DEC)
+local pf_payload_store_offset_partition_id = ProtoField.uint32("iggy.payload.request.store_offset.partition_id", "Partition ID", base.DEC)
+local pf_payload_store_offset_value        = ProtoField.uint64("iggy.payload.request.store_offset.value", "Offset Value", base.DEC)
 
 ----------------------------------------
 -- Field structure helpers (for command declarations)
