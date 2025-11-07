@@ -349,9 +349,160 @@ pub fn map_stats(payload: Bytes) -> Result<Stats, IggyError> {
 - payload가 비어있을 수 있음 (리소스 없음)
 - **에러 코드 정의**: `core/common/src/error/iggy_error.rs`
 
-### 4.5 TCP 세그먼트 재조립
-- 초기 구현에서는 생략 가능
-- 향후 `length` 필드로 메시지 크기 계산 후 `desegment_len` 사용
+### 4.5 TCP 세그먼트 재조립 ⚠️ 중요!
+
+**문제**: 큰 메시지는 여러 TCP 세그먼트로 분할되어 전송됩니다.
+
+```
+예시: 10KB 메시지 전송 시
+[Packet 100] TCP: [TCP segment of a reassembled PDU] (1460 bytes)
+[Packet 101] TCP: [TCP segment of a reassembled PDU] (1460 bytes)
+[Packet 102] TCP: [TCP segment of a reassembled PDU] (1460 bytes)
+...
+[Packet 107] IGGY: SEND_MESSAGES Request (완전한 PDU)
+```
+
+**현재 상태**: Dissector가 TCP desegmentation을 지원하지 않으면 불완전한 패킷만 보게 됩니다.
+
+**해결 방법**: Wireshark의 TCP reassembly 기능 사용
+
+```lua
+function iggy.dissector(tvbuf, pktinfo, root)
+    local available = tvbuf:len()
+
+    -- 1. 최소 헤더 크기 체크
+    if available < 4 then
+        pktinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+        return
+    end
+
+    -- 2. 요청/응답에 따라 필요한 길이 계산
+    local msg_type = detect_message_type(tvbuf)
+
+    if msg_type == "request" then
+        -- 요청: length(4) + code(4) + payload
+        local msg_len = tvbuf(0, 4):le_uint() + 4  -- length 필드 자체 포함
+
+        if available < msg_len then
+            pktinfo.desegment_len = msg_len - available
+            return
+        end
+    elseif msg_type == "response" then
+        -- 응답: status(4) + length(4) + payload
+        if available < 8 then
+            pktinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+            return
+        end
+
+        local payload_len = tvbuf(4, 4):le_uint()
+        local msg_len = 8 + payload_len
+
+        if available < msg_len then
+            pktinfo.desegment_len = msg_len - available
+            return
+        end
+    end
+
+    -- 3. 완전한 메시지가 확보되면 dissection 진행
+    dissect_iggy_message(tvbuf, pktinfo, root)
+end
+```
+
+**참고**:
+- `pktinfo.desegment_len`: 추가로 필요한 바이트 수
+- `DESEGMENT_ONE_MORE_SEGMENT`: 정확한 길이를 모를 때 사용
+- 초기 구현에서는 생략 가능하나, **실제 운영 환경에서는 필수**
+
+### 4.6 패킷 순서와 엣지 케이스
+
+#### 4.6.1 Out-of-Order는 발생하지 않음 ✅
+
+**IGGY는 순차 처리만 지원합니다!** (3.2절 참고)
+
+- ✅ **클라이언트**: Mutex로 요청을 직렬화 (pipelining 불가)
+- ✅ **서버**: 각 connection별 loop로 순차 처리
+- ✅ **Wireshark**: TCP 5-tuple로 connection 자동 분리
+
+```
+Connection 1 (Client A): Request1 → Response1 → Request2 → Response2
+Connection 2 (Client B): Request1 → Response1 → Request3 → Response3
+```
+
+**결론**: 같은 TCP 스트림 내에서는 항상 순차적이므로, correlation ID나 요청 큐 불필요!
+
+#### 4.6.2 실제 발생 가능한 엣지 케이스
+
+##### 🔴 1. TCP Segmentation (가장 중요!)
+- **문제**: 큰 메시지가 여러 패킷으로 분할
+- **영향**: 4.5절 참고 - 불완전한 메시지 파싱 실패
+- **해결**: `pinfo.desegment_len` 설정 (4.5절)
+- **우선순위**: ⭐⭐⭐ 필수
+
+##### 🟡 2. TCP Retransmission
+```
+[Packet 50] IGGY: Request (seq=1000)
+[Packet 55] [TCP Retransmission] (seq=1000)
+```
+- **문제**: 네트워크 패킷 손실로 재전송 발생
+- **영향**: Wireshark가 자동으로 `[TCP Retransmission]` 표시
+- **해결**: Dissector는 정상 처리하면 됨 (TCP layer가 처리)
+- **우선순위**: ⭐ 영향 없음
+
+##### 🟡 3. Capture 중간 시작
+```
+[Packet 1] IGGY: Response (요청이 캡처 안됨)
+[Packet 2] IGGY: Request
+[Packet 3] IGGY: Response
+```
+- **문제**: 캡처 시작 전에 이미 연결이 설정됨
+- **영향**: 첫 번째 응답의 요청 코드를 알 수 없음
+- **해결**: "Unknown Request" 또는 "Request not captured" 표시
+- **우선순위**: ⭐⭐ 권장
+
+```lua
+-- 응답 파싱 시
+local request_code = stream_requests[stream_id]
+if not request_code then
+    tree:add("Unknown request (capture started mid-connection)")
+    return
+end
+```
+
+##### 🟢 4. Network-level Out-of-Order
+```
+Network: Packet A (seq=1000) → Packet C (seq=2000) → Packet B (seq=1500)
+TCP Layer: 자동 재조립 → 순서대로 전달
+Wireshark: [TCP Out-Of-Order] 표시 (정보성)
+```
+- **문제**: 라우터/스위치에서 패킷 순서 뒤바뀜
+- **영향**: TCP가 자동으로 재조립하므로 application layer는 영향 없음
+- **해결**: 필요 없음
+- **우선순위**: 영향 없음
+
+##### 🟢 5. 연결 중단
+```
+[Packet 100] IGGY: Request (incomplete)
+[Packet 101] TCP: [FIN] or [RST]
+```
+- **문제**: 응답 수신 전에 연결 종료
+- **영향**: 불완전한 메시지
+- **해결**: 길이 체크로 자연스럽게 처리됨
+- **우선순위**: ⭐ 영향 없음
+
+#### 4.6.3 구현 권장사항
+
+**1단계 (필수)**:
+- ✅ 요청/응답 헤더 파싱
+- ✅ TCP 스트림별 마지막 요청 추적 (단순 덮어쓰기)
+- ✅ 방향 구분 (클라이언트 ↔ 서버)
+
+**2단계 (강력 권장)**:
+- ⚠️ TCP desegmentation 지원 (4.5절)
+- ⚠️ Capture 중간 시작 처리
+
+**3단계 (선택)**:
+- 재전송 패킷 감지 및 필터링
+- 에러 메시지 상세화
 
 ---
 
@@ -441,10 +592,13 @@ core/
 - [x] Command 코드 식별
 - [ ] Status 코드 해석
 
-### 7.2 2단계: 간단한 Command
-- [ ] Ping (1) - payload 없음
-- [ ] LoginUser (38) - 간단한 문자열
-- [ ] GetStream (200) - Identifier 파싱
+### 7.2 2단계: TCP Desegmentation (강력 권장)
+- [ ] TCP 세그먼트 재조립 지원 (4.5절)
+- [ ] Capture 중간 시작 처리 (4.6.2절)
+- [ ] 간단한 Command 구현
+  - [ ] Ping (1) - payload 없음
+  - [ ] LoginUser (38) - 간단한 문자열
+  - [ ] GetStream (200) - Identifier 파싱
 
 ### 7.3 3단계: 복잡한 Command
 - [ ] PollMessages (100) - 여러 공통 타입
@@ -453,7 +607,7 @@ core/
 
 ### 7.4 4단계: 전체 지원
 - [ ] 나머지 47개 command
-- [ ] TCP 세그먼트 재조립
+- [ ] 재전송 패킷 필터링
 - [ ] 에러 메시지 상세화
 
 ---
@@ -476,7 +630,11 @@ core/
 
 ## 9. 버전 정보
 
-- **작성일**: 2025-11-07
+- **작성일**: 2025-11-08 (최종 수정)
 - **기준 코드**: iggy 프로젝트 (commit: f0d3d50e)
 - **참고 브랜치**: temp2-feat/custom-wireshark-dissector
-- **문서 버전**: 2.0 (Lua Dissector 구현 가이드)
+- **문서 버전**: 2.1 (Lua Dissector 구현 가이드 + TCP Desegmentation & 엣지 케이스)
+
+### 변경 이력
+- **v2.1** (2025-11-08): TCP desegmentation 구현 가이드 추가 (4.5절), 패킷 순서 및 엣지 케이스 분석 추가 (4.6절), 구현 우선순위 조정
+- **v2.0** (2025-11-07): 초기 작성 - 요청/응답 매핑 원리 설명, 구현 가이드
