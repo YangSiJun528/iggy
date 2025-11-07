@@ -182,52 +182,67 @@ local STATUS_CODES = {
 }
 
 ----------------------------------------
--- Helper: Detect message type
+-- Helper: Validate request format
 ----------------------------------------
-local function detect_message_type(buffer)
+local function is_valid_request(buffer)
     local buflen = buffer:len()
     if buflen < 8 then
-        return nil
+        return false
     end
 
     local first_field = buffer(0, 4):le_uint()
     local second_field = buffer(4, 4):le_uint()
 
-    -- Try to detect as Request
     -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
     -- where LENGTH = CODE(4) + PAYLOAD(N)
     -- Total packet size = 4 + LENGTH
+
+    -- Check if second field is a known command code
     if COMMANDS[second_field] then
         local expected_total = 4 + first_field
         if expected_total == buflen and first_field >= 4 then
-            return "request"
+            return true
         end
     end
 
-    -- Try to detect as Response
+    return false
+end
+
+----------------------------------------
+-- Helper: Validate response format
+----------------------------------------
+local function is_valid_response(buffer)
+    local buflen = buffer:len()
+    if buflen < 8 then
+        return false
+    end
+
+    local first_field = buffer(0, 4):le_uint()
+    local second_field = buffer(4, 4):le_uint()
+
     -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
     -- Total packet size = 8 + LENGTH
 
     -- For error responses: STATUS != 0, LENGTH = 0
     if first_field ~= 0 and second_field == 0 and buflen == 8 then
-        return "response"
+        return true
     end
 
     -- For success responses: STATUS = 0, LENGTH >= 0
     if first_field == 0 then
         local expected_total = 8 + second_field
         if expected_total == buflen then
-            return "response"
+            return true
         end
     end
 
     -- Additional heuristic for responses with unknown status codes
     local expected_total = 8 + second_field
     if expected_total == buflen and second_field < 1000000 then
-        return "response"
+        return true
     end
 
-    return nil
+    return false
 end
 
 ----------------------------------------
@@ -368,24 +383,83 @@ function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
 
     local buflen = buffer:len()
-    if buflen < 8 then
-        local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
-        subtree:add_proto_expert_info(ef_too_short)
-        pinfo.cols.info:set("Malformed packet (too short)")
-        return 0
+
+    -- TCP Desegmentation: Step 1 - Check minimum header size
+    if buflen < 4 then
+        -- Need at least 4 bytes to read the first field (length or status)
+        pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+        return
     end
 
-    -- Detect message type
-    local msg_type = detect_message_type(buffer)
+    -- Determine direction based on port
+    local server_port = iggy.prefs.server_port
+    local is_request = (pinfo.dst_port == server_port)
+    local is_response = (pinfo.src_port == server_port)
 
-    if msg_type == "request" then
-        return dissect_request(buffer, pinfo, tree)
-    elseif msg_type == "response" then
-        return dissect_response(buffer, pinfo, tree)
+    -- TCP Desegmentation: Step 2 - Calculate required length based on direction
+    if is_request then
+        -- Assume this is a request, validate format
+        if is_valid_request(buffer) then
+            -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
+            -- Total size = 4 + LENGTH
+            local length = buffer(0, 4):le_uint()
+            local total_len = 4 + length
+
+            if buflen < total_len then
+                pinfo.desegment_len = total_len - buflen
+                return
+            end
+
+            return dissect_request(buffer, pinfo, tree)
+        else
+            -- Port indicates request, but format doesn't match
+            local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
+            subtree:add_proto_expert_info(ef_invalid_length,
+                string.format("Expected request format (dst_port=%d), but format validation failed", server_port))
+            pinfo.cols.info:set("Malformed request")
+            return 0
+        end
+
+    elseif is_response then
+        -- Assume this is a response, validate format
+        if is_valid_response(buffer) then
+            -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
+            -- Need at least 8 bytes to read header
+            if buflen < 8 then
+                pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+                return
+            end
+
+            local payload_len = buffer(4, 4):le_uint()
+            local total_len = 8 + payload_len
+
+            if buflen < total_len then
+                pinfo.desegment_len = total_len - buflen
+                return
+            end
+
+            return dissect_response(buffer, pinfo, tree)
+        else
+            -- Port indicates response, but format doesn't match
+            local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
+            subtree:add_proto_expert_info(ef_invalid_length,
+                string.format("Expected response format (src_port=%d), but format validation failed", server_port))
+            pinfo.cols.info:set("Malformed response")
+            return 0
+        end
+
     else
-        -- Unknown format
+        -- Neither request nor response port - shouldn't happen with port-based registration
+        if buflen < 8 then
+            local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
+            subtree:add_proto_expert_info(ef_too_short)
+            pinfo.cols.info:set("Malformed packet (too short)")
+            return 0
+        end
+
         local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Unknown)")
-        pinfo.cols.info:set("Unknown packet format")
+        pinfo.cols.info:set(string.format("Unknown direction (src=%d, dst=%d, server=%d)",
+            pinfo.src_port, pinfo.dst_port, server_port))
         return 0
     end
 end
