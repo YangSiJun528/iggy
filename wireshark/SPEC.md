@@ -1,38 +1,11 @@
-# Iggy Binary Protocol Specification
+# Iggy Binary Protocol - Wireshark Dissector 구현 가이드
 
-이 문서는 iggy 프로토콜의 바이너리 통신 명세를 정리한 것입니다.
-Wireshark Dissector 구현을 위해 작성되었으며, TCP 및 QUIC 통신의 바이너리 포맷을 설명합니다.
-
-## 참고 코드
-
-이 문서는 다음 소스 코드를 분석하여 작성되었습니다:
-
-### 요청(Request) 관련
-- **Command 정의**: `core/server/src/binary/command.rs`
-  - `define_server_command_enum!` 매크로로 모든 명령어 정의
-- **Command 코드 상수**: `core/common/src/types/command/mod.rs`
-  - 모든 command code 상수 및 이름 정의
-- **BytesSerializable trait**: `core/common/src/traits/bytes_serializable.rs`
-  - 직렬화/역직렬화 인터페이스 정의
-- **Command 구현 예시**:
-  - `core/common/src/commands/system/ping.rs` (간단한 예시)
-  - `core/common/src/commands/messages/poll_messages.rs` (복잡한 예시)
-
-### 응답(Response) 관련
-- **응답 전송 로직**: `core/server/src/tcp/sender.rs`
-  - `send_ok_response()`, `send_error_response()` 함수
-  - 응답 바이너리 포맷 구성
-- **Sender trait**: `core/server/src/binary/sender.rs`
-  - 응답 전송 인터페이스 정의
-
-### 공통 타입
-- **Identifier**: `core/common/src/types/identifier/mod.rs`
-- **Consumer**: `core/common/src/types/consumer/consumer_kind.rs`
-- **기타 BytesSerializable 구현체들**: `core/common/src/types/` 하위 디렉토리
+이 문서는 iggy 프로토콜의 Wireshark Dissector(Lua)를 구현하기 위한 가이드입니다.
+전체 payload 구조를 상세히 담는 대신, **어떤 코드를 참고해야 하는지**와 **주의사항**에 집중합니다.
 
 ---
 
-## 1. 프로토콜 개요
+## 1. 프로토콜 기본 구조
 
 ### 1.1 요청(Request) 포맷
 
@@ -45,18 +18,11 @@ Wireshark Dissector 구현을 위해 작성되었으며, TCP 및 QUIC 통신의 
 +--------+--------+----------+
 ```
 
-**필드 설명:**
-- `length`: 전체 길이 = code(4 bytes) + payload(N bytes) *(length 자체는 제외)*
-- `code`: 요청 코드 (u32, little-endian)
-- `payload`: 실제 데이터 (N bytes)
+- **length**: code(4B) + payload(N) 길이 *(length 필드 자체는 제외)*
+- **code**: 요청 코드 (u32, little-endian)
+- **payload**: 실제 데이터 (command마다 다름)
 
-**예시:**
-- payload가 100 bytes인 경우
-  - `length` = 104 (code 4 + payload 100)
-  - 전체 메시지 크기 = 108 bytes (length 4 + code 4 + payload 100)
-
-**코드 출처:**
-- `core/server/src/binary/command.rs:151-157`의 `as_bytes()` 함수
+**참고 코드:** `core/server/src/binary/command.rs:151-157`
 
 ### 1.2 응답(Response) 포맷
 
@@ -69,643 +35,314 @@ Wireshark Dissector 구현을 위해 작성되었으며, TCP 및 QUIC 통신의 
 +--------+--------+----------+
 ```
 
-**필드 설명:**
-- `status`: 상태 코드 (u32, little-endian)
-  - `0`: 성공 (OK)
-  - `0 이외`: 에러 코드 (`IggyError::as_code()`)
-- `length`: payload 길이만 (status는 제외, u32, little-endian)
-- `payload`: 응답 데이터 (N bytes)
-  - status가 에러인 경우: length = 0, payload는 비어있음
+- **status**: 0=성공, 그 외=에러 코드 (u32, little-endian)
+- **length**: payload 길이만 (status는 제외)
+- **payload**: 응답 데이터 (에러 시 비어있음)
 
-**에러 처리:**
-- status가 에러 코드인 경우: length = 0, payload 없음
-- 존재하지 않는 리소스: status = 0이지만 payload 비어있음
-
-**코드 출처:**
-- `core/server/src/tcp/sender.rs:78-98`의 `send_response()` 함수
-- `core/server/src/tcp/sender.rs:68-76`의 `send_error_response()` 함수
+**참고 코드:** `core/server/src/tcp/sender.rs:78-98`
 
 ---
 
 ## 2. Command 코드 목록
 
-모든 command 코드는 `core/common/src/types/command/mod.rs`에 정의되어 있습니다.
+총 50개의 command가 있으며, 모두 `core/common/src/types/command/mod.rs`에 정의되어 있습니다.
 
-### 2.1 System Commands (1-19)
+### 주요 Command 그룹
 
-| Code | Name | Description |
-|------|------|-------------|
-| 1 | PING | 서버 상태 확인 |
-| 10 | GET_STATS | 서버 통계 조회 |
-| 11 | GET_SNAPSHOT_FILE | 스냅샷 파일 조회 |
-| 12 | GET_CLUSTER_METADATA | 클러스터 메타데이터 조회 |
+| 범위 | 카테고리 | 예시 |
+|------|----------|------|
+| 1-19 | System | PING(1), GET_STATS(10) |
+| 20-44 | User & Client | LOGIN_USER(38), GET_ME(20) |
+| 100-122 | Message | POLL_MESSAGES(100), SEND_MESSAGES(101) |
+| 200-205 | Stream | GET_STREAM(200), CREATE_STREAM(202) |
+| 300-305 | Topic | GET_TOPIC(300), CREATE_TOPIC(302) |
+| 402-503 | Partition & Segment | CREATE_PARTITIONS(402) |
+| 600-605 | Consumer Group | GET_CONSUMER_GROUP(600) |
 
-### 2.2 User & Client Commands (20-44)
-
-| Code | Name | Description |
-|------|------|-------------|
-| 20 | GET_ME | 현재 사용자 정보 조회 |
-| 21 | GET_CLIENT | 클라이언트 조회 |
-| 22 | GET_CLIENTS | 클라이언트 목록 조회 |
-| 31 | GET_USER | 사용자 조회 |
-| 32 | GET_USERS | 사용자 목록 조회 |
-| 33 | CREATE_USER | 사용자 생성 |
-| 34 | DELETE_USER | 사용자 삭제 |
-| 35 | UPDATE_USER | 사용자 수정 |
-| 36 | UPDATE_PERMISSIONS | 권한 수정 |
-| 37 | CHANGE_PASSWORD | 비밀번호 변경 |
-| 38 | LOGIN_USER | 사용자 로그인 |
-| 39 | LOGOUT_USER | 사용자 로그아웃 |
-| 41 | GET_PERSONAL_ACCESS_TOKENS | 개인 액세스 토큰 목록 조회 |
-| 42 | CREATE_PERSONAL_ACCESS_TOKEN | 개인 액세스 토큰 생성 |
-| 43 | DELETE_PERSONAL_ACCESS_TOKEN | 개인 액세스 토큰 삭제 |
-| 44 | LOGIN_WITH_PERSONAL_ACCESS_TOKEN | 개인 액세스 토큰으로 로그인 |
-
-### 2.3 Message Commands (100-122)
-
-| Code | Name | Description |
-|------|------|-------------|
-| 100 | POLL_MESSAGES | 메시지 폴링 |
-| 101 | SEND_MESSAGES | 메시지 전송 |
-| 102 | FLUSH_UNSAVED_BUFFER | 미저장 버퍼 플러시 |
-| 120 | GET_CONSUMER_OFFSET | 컨슈머 오프셋 조회 |
-| 121 | STORE_CONSUMER_OFFSET | 컨슈머 오프셋 저장 |
-| 122 | DELETE_CONSUMER_OFFSET | 컨슈머 오프셋 삭제 |
-
-### 2.4 Stream Commands (200-205)
-
-| Code | Name | Description |
-|------|------|-------------|
-| 200 | GET_STREAM | 스트림 조회 |
-| 201 | GET_STREAMS | 스트림 목록 조회 |
-| 202 | CREATE_STREAM | 스트림 생성 |
-| 203 | DELETE_STREAM | 스트림 삭제 |
-| 204 | UPDATE_STREAM | 스트림 수정 |
-| 205 | PURGE_STREAM | 스트림 퍼지 |
-
-### 2.5 Topic Commands (300-305)
-
-| Code | Name | Description |
-|------|------|-------------|
-| 300 | GET_TOPIC | 토픽 조회 |
-| 301 | GET_TOPICS | 토픽 목록 조회 |
-| 302 | CREATE_TOPIC | 토픽 생성 |
-| 303 | DELETE_TOPIC | 토픽 삭제 |
-| 304 | UPDATE_TOPIC | 토픽 수정 |
-| 305 | PURGE_TOPIC | 토픽 퍼지 |
-
-### 2.6 Partition & Segment Commands (402-503)
-
-| Code | Name | Description |
-|------|------|-------------|
-| 402 | CREATE_PARTITIONS | 파티션 생성 |
-| 403 | DELETE_PARTITIONS | 파티션 삭제 |
-| 503 | DELETE_SEGMENTS | 세그먼트 삭제 |
-
-### 2.7 Consumer Group Commands (600-605)
-
-| Code | Name | Description |
-|------|------|-------------|
-| 600 | GET_CONSUMER_GROUP | 컨슈머 그룹 조회 |
-| 601 | GET_CONSUMER_GROUPS | 컨슈머 그룹 목록 조회 |
-| 602 | CREATE_CONSUMER_GROUP | 컨슈머 그룹 생성 |
-| 603 | DELETE_CONSUMER_GROUP | 컨슈머 그룹 삭제 |
-| 604 | JOIN_CONSUMER_GROUP | 컨슈머 그룹 가입 |
-| 605 | LEAVE_CONSUMER_GROUP | 컨슈머 그룹 탈퇴 |
+**전체 목록:** `core/common/src/types/command/mod.rs:28-121`
 
 ---
 
-## 3. 공통 데이터 타입
+## 3. 구현 가이드
 
-공통 데이터 타입은 `BytesSerializable` trait를 구현하며, 여러 command의 요청/응답 payload에서 재사용됩니다.
+### 3.1 요청 Payload 파싱
 
-### 3.1 Identifier
+**요청은 `BytesSerializable` trait를 사용합니다.**
 
-**구조:**
-```
-+------+--------+-------+
-| kind | length | value |
-+------+--------+-------+
-| 1B   | 1B     | N B   |
-| u8   | u8     | bytes |
-+------+--------+-------+
-```
+#### 구현 절차
+1. Command 코드로 어떤 요청인지 식별
+2. 해당 command 구현 찾기: `core/common/src/commands/**/*.rs`
+3. `BytesSerializable::from_bytes()` 또는 `to_bytes()` 구현 참고
+4. 바이트 순서대로 필드 파싱
 
-**필드:**
-- `kind`: Identifier 종류
-  - `1`: Numeric (u32, 4 bytes)
-  - `2`: String (UTF-8, 1-255 bytes)
-- `length`: value 길이 (1-255)
-- `value`: 실제 값
-  - Numeric인 경우: u32 (little-endian, 4 bytes)
-  - String인 경우: UTF-8 바이트 배열 (1-255 bytes)
+#### 예시: Ping (Code: 1) - 가장 단순
+- **Payload**: 비어있음
+- **코드**: `core/common/src/commands/system/ping.rs`
 
-**사용처:** stream_id, topic_id, user_id 등 거의 모든 리소스 식별
+#### 예시: GetStream (Code: 200) - 단순
+- **Payload**: Identifier 하나
+- **코드**: `core/common/src/commands/streams/get_stream.rs:50-63`
 
-**코드 출처:**
-- `core/common/src/types/identifier/mod.rs:216-247`의 `BytesSerializable` 구현
+#### 예시: LoginUser (Code: 38) - 중간
+- **Payload**: username(가변) + password(가변) + version(가변, optional) + context(가변, optional)
+- **코드**: `core/common/src/commands/users/login_user.rs:82-110`
 
-### 3.2 Consumer
+#### 예시: PollMessages (Code: 100) - 복잡
+- **Payload**: Consumer + stream_id + topic_id + partition_id + strategy + count + auto_commit
+- **코드**: `core/common/src/commands/messages/poll_messages.rs:138-206`
 
-**구조:**
-```
-+------+------------+
-| kind | identifier |
-+------+------------+
-| 1B   | variable   |
-| u8   | Identifier |
-+------+------------+
-```
+### 3.2 응답 Payload 파싱 ⚠️ 중요!
 
-**필드:**
-- `kind`: Consumer 종류
-  - `1`: Consumer (일반 컨슈머)
-  - `2`: ConsumerGroup (컨슈머 그룹)
-- `id`: Identifier (위의 Identifier 구조 참조)
+**응답은 BytesSerializable를 사용하지 않습니다!**
 
-**사용처:** PollMessages, GetConsumerOffset, StoreConsumerOffset 등
+#### 구현 절차
+1. **클라이언트 SDK의 mapper 함수 찾기**: `core/binary_protocol/src/utils/mapper.rs`
+2. 해당 함수의 바이트 파싱 로직 분석
+3. 순차적으로 필드 파싱 (대부분 고정 offset 사용)
 
-**코드 출처:**
-- `core/common/src/types/consumer/consumer_kind.rs:95-118`의 `BytesSerializable` 구현
+#### 서버 vs 클라이언트 mapper
 
-### 3.3 PollingStrategy
+| 역할 | 위치 | 함수 |
+|------|------|------|
+| 서버 (응답 생성) | `core/server/src/binary/mapper.rs` | `map_stats()`, `map_stream()` 등 |
+| 클라이언트 (응답 파싱) | `core/binary_protocol/src/utils/mapper.rs` | `map_stats()`, `map_stream()` 등 |
 
-**구조:**
-```
-+------+-------+
-| kind | value |
-+------+-------+
-| 1B   | 8B    |
-| u8   | u64   |
-+------+-------+
-```
+**Lua 구현 시에는 클라이언트 mapper를 참고해야 합니다!**
 
-**필드:**
-- `kind`: Polling 전략 종류
-  - `1`: Offset
-  - `2`: Timestamp
-  - `3`: First
-  - `4`: Last
-  - `5`: Next
-- `value`: 전략에 따른 값 (u64, little-endian)
-  - Offset: 시작 오프셋
-  - Timestamp: 시작 타임스탬프
-  - First/Last/Next: 무시됨 (0)
-
-**사용처:** PollMessages 요청
-
-**코드 출처:**
-- `core/common/src/types/message/polling_strategy.rs`
-
-### 3.4 Partitioning
-
-**구조:**
-```
-+------+--------+-------+
-| kind | length | value |
-+------+--------+-------+
-| 1B   | 1B     | N B   |
-| u8   | u8     | bytes |
-+------+--------+-------+
-```
-
-**필드:**
-- `kind`: Partitioning 종류
-  - `1`: Balanced (서버에서 round-robin으로 결정)
-  - `2`: PartitionId (클라이언트가 파티션 ID 지정)
-  - `3`: MessagesKey (메시지 키의 해시로 결정)
-- `length`: value 길이 (0-255)
-- `value`: 전략에 따른 값
-  - Balanced: 비어있음 (length=0)
-  - PartitionId: u32 (little-endian, 4 bytes)
-  - MessagesKey: 임의의 바이트 배열 (1-255 bytes)
-
-**사용처:** SendMessages 요청
-
-**코드 출처:**
-- `core/common/src/types/message/partitioning.rs:36-149`의 `BytesSerializable` 구현
-
----
-
-## 4. Command Payload 예시
-
-### 4.1 Ping (Code: 1)
-
-**요청 Payload:** 없음 (비어있음)
-
-**응답 Payload:** 없음 (비어있음)
-
-**코드 출처:**
-- 요청: `core/common/src/commands/system/ping.rs:44-57`
-- 응답: `core/server/src/binary/handlers/system/ping_handler.rs:52`
-
-### 4.2 GetStats (Code: 10)
-
-**요청 Payload:** 없음 (비어있음)
-
-**응답 Payload:** Stats 구조 (고정 크기 + 가변 크기 필드들)
-
-```
-+------------+----------+-----------------+-------------+--------------+---------------+
-| process_id | cpu_usage| total_cpu_usage | memory_usage| total_memory | available_mem |
-+------------+----------+-----------------+-------------+--------------+---------------+
-| 4B (u32)   | 4B (f32) | 4B (f32)        | 8B (u64)    | 8B (u64)     | 8B (u64)      |
-+------------+----------+-----------------+-------------+--------------+---------------+
-
-+----------+------------+------------+---------------+-------------------+--------------+
-| run_time | start_time | read_bytes | written_bytes | messages_size_bytes| streams_count|
-+----------+------------+------------+---------------+-------------------+--------------+
-| 8B (u64) | 8B (u64)   | 8B (u64)   | 8B (u64)      | 8B (u64)          | 4B (u32)     |
-+----------+------------+------------+---------------+-------------------+--------------+
-
-+--------------+-----------------+---------------+------------------+---------------+
-| topics_count | partitions_count| segments_count| messages_count   | clients_count |
-+--------------+-----------------+---------------+------------------+---------------+
-| 4B (u32)     | 4B (u32)        | 4B (u32)      | 8B (u64)         | 4B (u32)      |
-+--------------+-----------------+---------------+------------------+---------------+
-
-+------------------------+-----------------+---------+-----------------+---------+
-| consumer_groups_count  | hostname_length | hostname| os_name_length  | os_name |
-+------------------------+-----------------+---------+-----------------+---------+
-| 4B (u32)               | 4B (u32)        | N bytes | 4B (u32)        | N bytes |
-+------------------------+-----------------+---------+-----------------+---------+
-
-+------------------+------------+---------------------+--------------------+
-| os_version_length| os_version | kernel_version_length| kernel_version   |
-+------------------+------------+---------------------+--------------------+
-| 4B (u32)         | N bytes    | 4B (u32)            | N bytes           |
-+------------------+------------+---------------------+--------------------+
-
-+---------------------------+-------------------------+-------------------+
-| iggy_server_version_length| iggy_server_version     | iggy_server_semver|
-+---------------------------+-------------------------+-------------------+
-| 4B (u32)                  | N bytes                 | 4B (u32), optional|
-+---------------------------+-------------------------+-------------------+
-
-+--------------------+------------------+
-| cache_metrics_count| cache_metrics... |
-+--------------------+------------------+
-| 4B (u32)           | N entries        |
-+--------------------+------------------+
-```
-
-**Cache Metrics 엔트리 구조 (반복):**
-```
-+-----------+----------+--------------+------+--------+-----------+
-| stream_id | topic_id | partition_id | hits | misses | hit_ratio |
-+-----------+----------+--------------+------+--------+-----------+
-| 4B (u32)  | 4B (u32) | 4B (u32)     | 8B   | 8B     | 4B (f32)  |
-+-----------+----------+--------------+------+--------+-----------+
-```
-
-**코드 출처:**
-- 응답: `core/server/src/binary/mapper.rs:33-79`
-
-### 4.3 GetStream (Code: 200)
-
-**요청 Payload:**
-```
-+-----------+
-| stream_id |
-+-----------+
-| Identifier|
-+-----------+
-```
-
-**응답 Payload:** Stream 구조
-
-```
-+-----------+------------+--------------+------+----------------+
-| stream_id | created_at | topics_count | size | messages_count |
-+-----------+------------+--------------+------+----------------+
-| 4B (u32)  | 8B (u64)   | 4B (u32)     | 8B   | 8B (u64)       |
-+-----------+------------+--------------+------+----------------+
-
-+-------------+------+
-| name_length | name |
-+-------------+------+
-| 1B (u8)     | N B  |
-+-------------+------+
-
-+--------------------+
-| topics (repeated)  |
-+--------------------+
-| topics_count 만큼   |
-+--------------------+
-```
-
-**Topic 구조 (Stream 응답에 포함, 반복):**
-```
-+----------+------------+------------------+----------------+
-| topic_id | created_at | partitions_count | message_expiry |
-+----------+------------+------------------+----------------+
-| 4B (u32) | 8B (u64)   | 4B (u32)         | 8B (u64)       |
-+----------+------------+------------------+----------------+
-
-+-----------------------+----------------+--------------------+
-| compression_algorithm | max_topic_size | replication_factor |
-+-----------------------+----------------+--------------------+
-| 1B (u8)               | 8B (u64)       | 1B (u8)            |
-+-----------------------+----------------+--------------------+
-
-+-----------+----------------+-------------+------+
-| size      | messages_count | name_length | name |
-+-----------+----------------+-------------+------+
-| 8B (u64)  | 8B (u64)       | 1B (u8)     | N B  |
-+-----------+----------------+-------------+------+
-```
-
-**코드 출처:**
-- 요청: `core/common/src/commands/streams/get_stream.rs:50-63`
-- 응답: `core/server/src/binary/mapper.rs:153-160, 213-235`
-
-### 4.4 LoginUser (Code: 38)
-
-**요청 Payload:**
-```
-+-----------------+----------+-----------------+----------+
-| username_length | username | password_length | password |
-+-----------------+----------+-----------------+----------+
-| 1B (u8)         | N bytes  | 1B (u8)         | N bytes  |
-+-----------------+----------+-----------------+----------+
-
-+----------------+---------+----------------+---------+
-| version_length | version | context_length | context |
-+----------------+---------+----------------+---------+
-| 4B (u32)       | N bytes | 4B (u32)       | N bytes |
-+----------------+---------+----------------+---------+
-```
-
-**필드:**
-- `username_length`: 사용자명 길이 (u8)
-- `username`: 사용자명 (UTF-8, 3-50 bytes)
-- `password_length`: 비밀번호 길이 (u8)
-- `password`: 비밀번호 (UTF-8, 3-100 bytes)
-- `version_length`: 버전 문자열 길이 (u32, 0이면 None)
-- `version`: SDK 버전 (UTF-8, optional)
-- `context_length`: 컨텍스트 문자열 길이 (u32, 0이면 None)
-- `context`: 컨텍스트 메타데이터 (UTF-8, optional)
-
-**응답 Payload:** UserId (4 bytes)
-```
-+---------+
-| user_id |
-+---------+
-| 4B (u32)|
-+---------+
-```
-
-**코드 출처:**
-- 요청: `core/common/src/commands/users/login_user.rs:82-110`
-- 응답: `core/server/src/binary/mapper.rs:132-136`
-
-### 4.5 PollMessages (Code: 100)
-
-**요청 Payload 구조:**
-```
-+----------+-----------+----------+--------------+----------+-------+-------------+
-| consumer | stream_id | topic_id | partition_id | strategy | count | auto_commit |
-+----------+-----------+----------+--------------+----------+-------+-------------+
-| Consumer | Identifier| Identifier| 4B (u32)    | Strategy | 4B    | 1B          |
-+----------+-----------+----------+--------------+----------+-------+-------------+
-```
-
-**필드:**
-- `consumer`: Consumer 타입 (위의 Consumer 구조 참조)
-- `stream_id`: Stream Identifier
-- `topic_id`: Topic Identifier
-- `partition_id`: 파티션 ID (u32, little-endian)
-  - `0`: None (컨슈머 그룹용)
-  - `1~`: 파티션 ID
-- `strategy`: PollingStrategy (위의 PollingStrategy 구조 참조)
-- `count`: 폴링할 메시지 수 (u32, little-endian)
-- `auto_commit`: 자동 커밋 여부 (u8)
-  - `0`: false
-  - `1`: true
-
-**응답 Payload 구조:**
-```
-+--------------+----------------+----------------+-----------+
-| partition_id | current_offset | messages_count | messages  |
-+--------------+----------------+----------------+-----------+
-| 4B (u32)     | 8B (u64)       | 4B (u32)       | variable  |
-+--------------+----------------+----------------+-----------+
-```
-
-**코드 출처:**
-- 요청: `core/common/src/commands/messages/poll_messages.rs:138-206`
-- 응답: `core/server/src/binary/handlers/messages/poll_messages_handler.rs:78-96`
-
-### 4.6 SendMessages (Code: 101)
-
-**요청 Payload 구조:**
-```
-+-----------------+-----------+----------+--------------+----------------+
-| metadata_length | stream_id | topic_id | partitioning | messages_count |
-+-----------------+-----------+----------+--------------+----------------+
-| 4B (u32)        | Identifier| Identifier| Partitioning| 4B (u32)       |
-+-----------------+-----------+----------+--------------+----------------+
-
-+---------+-----------+
-| indexes | messages  |
-+---------+-----------+
-| N * 16B | variable  |
-+---------+-----------+
-```
-
-**필드:**
-- `metadata_length`: stream_id + topic_id + partitioning + messages_count 길이의 합
-- `stream_id`: Stream Identifier
-- `topic_id`: Topic Identifier
-- `partitioning`: Partitioning (위의 Partitioning 구조 참조)
-- `messages_count`: 메시지 개수 (u32)
-- `indexes`: 각 메시지의 인덱스 정보 (16 bytes * messages_count)
-  - 각 인덱스: offset(8B) + length(4B) + timestamp(4B)
-- `messages`: 실제 메시지 데이터들
-
-**응답 Payload:** 없음 (빈 OK 응답)
-
-**코드 출처:**
-- 요청: `core/common/src/commands/messages/send_messages.rs:58-119`
-- 응답: Handler에서 `send_empty_ok_response()` 호출
-
----
-
-## 5. 구현 시 주의사항
-
-### 5.1 바이트 순서 (Endianness)
-
-- 모든 정수형은 **Little-Endian** 형식을 사용합니다.
-- `u32`, `u64` 등 숫자는 `to_le_bytes()` / `from_le_bytes()`로 처리됩니다.
-
-### 5.2 가변 길이 타입
-
-- `Identifier`, `Consumer` 등은 가변 길이 타입입니다.
-- 파싱 시 `length` 필드를 먼저 읽고, 해당 길이만큼 `value`를 읽어야 합니다.
-
-### 5.3 TCP 세그먼트 재조립
-
-- 현재 이 명세는 TCP 세그먼트 재조립을 고려하지 않습니다.
-- 향후 구현 시 `length` 필드를 기반으로 전체 메시지 크기를 계산하고,
-  Wireshark의 `desegment_len`을 사용하여 구현할 수 있습니다.
-
-### 5.4 에러 코드
-
-- 에러 코드 정의는 `core/common/src/error/iggy_error.rs`에 있습니다.
-- HTTP 변환 코드는 `core/server/src/http/error.rs`에 있습니다.
-  (Dissector에는 직접 필요 없지만 참고용)
-
----
-
-## 6. 응답 포맷의 특징 (매우 중요!)
-
-### 6.1 응답은 순수 바이너리 포맷 (JSON 아님)
-
-iggy 프로토콜의 응답은 **JSON이 아닌 순수 바이너리 포맷**입니다.
-
-### 6.2 응답은 BytesSerializable를 사용하지 않음
-
-대부분의 응답 payload는 `BytesSerializable` trait를 사용하지 않고, **서버와 클라이언트에 각각 수동으로 구현된 직렬화/역직렬화 로직**이 있습니다.
-
-#### 서버 측 (응답 직렬화)
-`core/server/src/binary/mapper.rs`의 mapper 함수들이 직접 바이트로 구성:
-
-- `map_stats()` - GetStats 응답
-- `map_stream()` - GetStream 응답
-- `map_streams()` - GetStreams 응답
-- `map_topic()` - GetTopic 응답
-- `map_topics()` - GetTopics 응답
-- `map_user()` - GetUser 응답
-- `map_users()` - GetUsers 응답
-- `map_client()` - GetClient 응답
-- `map_clients()` - GetClients 응답
-- `map_consumer_group()` - GetConsumerGroup 응답
-- `map_consumer_groups()` - GetConsumerGroups 응답
-- `map_consumer_offset()` - GetConsumerOffset 응답
-- `map_identity_info()` - LoginUser 응답
-- `map_raw_pat()` - CreatePersonalAccessToken 응답
-- `map_personal_access_tokens()` - GetPersonalAccessTokens 응답
-
-#### 클라이언트 SDK (응답 역직렬화)
-`core/binary_protocol/src/utils/mapper.rs`의 mapper 함수들이 바이트를 파싱:
-
-**예시 1: `map_identity_info()` (LoginUser 응답 역직렬화)**
+#### 예시: LoginUser 응답 (Code: 38) - 가장 단순
 ```rust
+// core/binary_protocol/src/utils/mapper.rs:455-465
 pub fn map_identity_info(payload: Bytes) -> Result<IdentityInfo, IggyError> {
     let user_id = u32::from_le_bytes(payload[..4].try_into()?);
     Ok(IdentityInfo { user_id, access_token: None })
 }
 ```
-- payload의 처음 4 bytes를 u32로 파싱하여 user_id 추출
+- user_id (4 bytes, u32, little-endian)만 파싱
 
-**예시 2: `map_stream()` (GetStream 응답 역직렬화)**
+#### 예시: GetStream 응답 (Code: 200) - 중간
 ```rust
+// core/binary_protocol/src/utils/mapper.rs:552-573
 pub fn map_stream(payload: Bytes) -> Result<StreamDetails, IggyError> {
     let id = u32::from_le_bytes(payload[0..4].try_into()?);
     let created_at = u64::from_le_bytes(payload[4..12].try_into()?).into();
     let topics_count = u32::from_le_bytes(payload[12..16].try_into()?);
-    let size_bytes = u64::from_le_bytes(payload[16..24].try_into()?).into();
-    let messages_count = u64::from_le_bytes(payload[24..32].try_into()?);
-    let name_length = payload[32] as usize;
-    let name = String::from_utf8(payload[33..33 + name_length].to_vec())?;
-    // ... topics 파싱 ...
+    // ... 32 bytes 고정 필드 + name (가변) + topics (반복)
 }
 ```
-- 고정된 바이트 위치에서 각 필드를 순차적으로 파싱
+- 고정 offset에서 순차 파싱
+- name: length(1B) + data 패턴
+- topics: 반복 구조
 
-**예시 3: `map_stats()` (GetStats 응답 역직렬화)**
-- 108 bytes의 고정 크기 필드들 + 가변 길이 문자열들 + 캐시 메트릭스
-- `current_position` 변수로 파싱 위치를 추적하며 순차 파싱
-- 가변 길이 필드는 "length + data" 패턴 사용
+#### 예시: GetStats 응답 (Code: 10) - 복잡
+```rust
+// core/binary_protocol/src/utils/mapper.rs:37-350
+pub fn map_stats(payload: Bytes) -> Result<Stats, IggyError> {
+    // 108 bytes 고정 필드
+    let process_id = u32::from_le_bytes(payload[..4].try_into()?);
+    let cpu_usage = f32::from_le_bytes(payload[4..8].try_into()?);
+    // ...
+    let mut current_position = 108;
+    // 가변 길이 문자열들 (hostname, os_name, etc)
+    let hostname_length = u32::from_le_bytes(...);
+    current_position += 4;
+    let hostname = String::from_utf8(payload[current_position..].to_vec())?;
+    current_position += hostname_length;
+    // ... cache_metrics (반복 구조)
+}
+```
+- current_position 추적하며 순차 파싱
+- 가변 필드: length(4B) + data
+- 반복 필드: count(4B) + entries
 
-### 6.3 요청과 응답의 비대칭성
+### 3.3 공통 데이터 타입
 
-| | 요청 (Request) | 응답 (Response) |
-|---|---|---|
-| 직렬화 방식 | `BytesSerializable` trait | 수동 mapper 함수 |
-| 역직렬화 방식 | `BytesSerializable` trait | 수동 mapper 함수 |
-| 구현 위치 | `core/common/src/commands/**/*.rs` | 서버: `core/server/src/binary/mapper.rs`클라이언트: `core/binary_protocol/src/utils/mapper.rs` |
-| 구조 | 구조화된 타입 | 최적화된 바이너리 포맷 |
+요청/응답 payload에 자주 등장하는 타입들입니다.
 
-**설계 이유:**
-- 응답 직렬화 성능 최적화
-- 서버에서 불필요한 trait 구현 제거
-- 더 유연한 바이너리 포맷 제어
+#### Identifier
+```
++------+--------+-------+
+| kind | length | value |
++------+--------+-------+
+| 1B   | 1B     | N B   |
+```
+- kind: 1=Numeric(u32), 2=String(UTF-8)
+- **코드**: `core/common/src/types/identifier/mod.rs:216-247`
 
-### 6.4 Wireshark Dissector 구현 시 주의사항
+#### Consumer
+```
++------+------------+
+| kind | identifier |
++------+------------+
+| 1B   | Identifier |
+```
+- kind: 1=Consumer, 2=ConsumerGroup
+- **코드**: `core/common/src/types/consumer/consumer_kind.rs:95-118`
 
-응답 payload를 파싱할 때는:
-1. **클라이언트 SDK의 mapper 함수를 참고**해야 함 (`core/binary_protocol/src/utils/mapper.rs`)
-2. BytesSerializable 구현체를 찾아도 응답 파싱에는 사용할 수 없음
-3. 각 command마다 서버 mapper와 클라이언트 mapper를 **쌍으로** 분석해야 정확한 포맷을 알 수 있음
+#### PollingStrategy
+```
++------+-------+
+| kind | value |
++------+-------+
+| 1B   | 8B    |
+```
+- kind: 1=Offset, 2=Timestamp, 3=First, 4=Last, 5=Next
+- **코드**: `core/common/src/types/message/polling_strategy.rs`
 
-**바이트 파싱 패턴:**
-- 고정 크기 필드: 정해진 offset에서 직접 읽기
-- 가변 길이 필드: `length (u32 또는 u8) + data` 패턴
-- 반복 필드: `count (u32) + entries` 패턴
-- 중첩 구조: 순차적으로 파싱하며 position 추적
+#### Partitioning
+```
++------+--------+-------+
+| kind | length | value |
++------+--------+-------+
+| 1B   | 1B     | N B   |
+```
+- kind: 1=Balanced, 2=PartitionId, 3=MessagesKey
+- **코드**: `core/common/src/types/message/partitioning.rs:36-149`
 
 ---
 
-## 7. 향후 작업
+## 4. 구현 시 주의사항
 
-### 7.1 전체 Command Payload 명세
+### 4.1 바이트 순서 (Endianness) ⚠️
+- **모든 정수형은 Little-Endian**
+- u32, u64, f32 등 모두 `*_le_bytes()` 사용
 
-- 현재 문서는 6개 command만 상세히 다룹니다 (Ping, GetStats, GetStream, LoginUser, PollMessages, SendMessages)
-- 나머지 44개 command의 payload 구조를 문서화해야 합니다
-- 우선순위: 자주 사용되는 command부터 (CreateStream, CreateTopic, GetConsumerOffset 등)
+### 4.2 가변 길이 필드 패턴
+| 패턴 | 구조 | 예시 |
+|------|------|------|
+| 짧은 문자열 | length(1B) + data | Identifier(String), Stream name |
+| 긴 문자열 | length(4B) + data | hostname, os_name |
+| Optional | length가 0이면 None | LoginUser의 version, context |
+| 반복 | count(4B) + entries | topics, cache_metrics |
 
-### 7.2 Message 타입 명세
+### 4.3 파싱 순서
+1. **고정 크기 필드 먼저**: 정해진 offset에서 직접 읽기
+2. **가변 필드는 순차적**: length를 읽고 → data를 읽고 → position 이동
+3. **반복 필드**: count를 읽고 → 루프로 각 entry 파싱
 
-- PollMessages 응답과 SendMessages 요청에 포함되는 실제 메시지 데이터 구조
-- IggyMessage, IggyMessagesBatch 등의 바이너리 포맷
-- Message Header 구조
+### 4.4 에러 처리
+- 응답 status가 0이 아니면 에러
+- payload가 비어있을 수 있음 (리소스 없음)
+- **에러 코드 정의**: `core/common/src/error/iggy_error.rs`
 
-### 7.3 추가 공통 타입
-
-다음 타입들은 BytesSerializable를 구현하지만 아직 문서화되지 않음:
-- ConsumerOffsetInfo - GetConsumerOffset 응답에 사용
-- 기타 필요시 추가
+### 4.5 TCP 세그먼트 재조립
+- 초기 구현에서는 생략 가능
+- 향후 `length` 필드로 메시지 크기 계산 후 `desegment_len` 사용
 
 ---
 
-## 8. 참고 자료
+## 5. 구현 워크플로우
 
-### 8.1 주요 소스 파일 위치
+### 5.1 새로운 Command 구현하기
 
+#### 요청 파싱
+```
+1. Command 코드 확인 (예: 200 = GET_STREAM)
+2. 구현 코드 찾기
+   → core/common/src/commands/streams/get_stream.rs
+3. BytesSerializable::to_bytes() 구현 확인
+4. Lua로 동일한 순서로 파싱
+```
+
+#### 응답 파싱
+```
+1. 클라이언트 mapper 함수 찾기
+   → core/binary_protocol/src/utils/mapper.rs
+   → map_stream() 함수
+2. 바이트 파싱 로직 분석
+3. Lua로 동일한 순서로 파싱
+```
+
+### 5.2 디버깅 팁
+1. **실제 패킷 캡처**: tshark로 바이너리 확인
+2. **테스트 코드 참고**: 각 command의 `#[cfg(test)]` 모듈
+   - 예: `core/common/src/commands/system/ping.rs:65-87`
+3. **Rust 코드 실행**: 직접 직렬화해보고 hex 덤프 확인
+
+---
+
+## 6. 참고 코드 위치
+
+### 6.1 디렉토리 구조
 ```
 core/
 ├── common/src/
-│   ├── traits/bytes_serializable.rs     # BytesSerializable trait 정의
+│   ├── traits/bytes_serializable.rs     # BytesSerializable trait
 │   ├── types/
-│   │   ├── command/mod.rs               # Command 코드 상수 정의
-│   │   ├── identifier/mod.rs            # Identifier 구현
-│   │   ├── consumer/consumer_kind.rs    # Consumer 구현
-│   │   └── ...
-│   └── commands/                        # Command 구현체들
+│   │   ├── command/mod.rs               # Command 코드 목록
+│   │   ├── identifier/mod.rs            # Identifier
+│   │   ├── consumer/consumer_kind.rs    # Consumer
+│   │   └── message/
+│   │       ├── polling_strategy.rs      # PollingStrategy
+│   │       └── partitioning.rs          # Partitioning
+│   └── commands/                        # ⭐ 요청 구현 (BytesSerializable)
 │       ├── system/ping.rs
+│       ├── users/login_user.rs
+│       ├── streams/get_stream.rs
 │       ├── messages/poll_messages.rs
 │       └── ...
-└── server/src/
-    ├── binary/
-    │   ├── command.rs                   # ServerCommand enum 정의
-    │   ├── sender.rs                    # Sender trait 정의
-    │   └── handlers/                    # Command handler 구현
-    └── tcp/
-        └── sender.rs                    # 응답 전송 로직
-
+├── server/src/
+│   ├── binary/
+│   │   ├── command.rs                   # ServerCommand enum
+│   │   ├── mapper.rs                    # 서버 mapper (응답 생성)
+│   │   └── handlers/                    # Command handler
+│   └── tcp/sender.rs                    # 응답 전송 로직
+└── binary_protocol/src/
+    └── utils/mapper.rs                  # ⭐ 클라이언트 mapper (응답 파싱)
 ```
 
-### 8.2 테스트 코드
+### 6.2 핵심 파일
+| 파일 | 역할 | 용도 |
+|------|------|------|
+| `core/common/src/commands/**/*.rs` | 요청 직렬화/역직렬화 | 요청 payload 파싱 시 참고 |
+| `core/binary_protocol/src/utils/mapper.rs` | 응답 역직렬화 | 응답 payload 파싱 시 참고 ⭐ |
+| `core/server/src/binary/mapper.rs` | 응답 직렬화 | 응답 구조 이해용 |
+| `core/common/src/types/command/mod.rs` | Command 코드 정의 | 코드↔이름 매핑 |
 
-- 각 command 구현 파일의 `#[cfg(test)]` 모듈에 직렬화/역직렬화 테스트가 있습니다.
-- 예: `core/common/src/commands/system/ping.rs:65-87`
-- 예: `core/common/src/commands/messages/poll_messages.rs:228-321`
+---
+
+## 7. 구현 우선순위
+
+### 7.1 1단계: 기본 프로토콜
+- [x] 요청/응답 헤더 파싱
+- [x] Command 코드 식별
+- [ ] Status 코드 해석
+
+### 7.2 2단계: 간단한 Command
+- [ ] Ping (1) - payload 없음
+- [ ] LoginUser (38) - 간단한 문자열
+- [ ] GetStream (200) - Identifier 파싱
+
+### 7.3 3단계: 복잡한 Command
+- [ ] PollMessages (100) - 여러 공통 타입
+- [ ] GetStats (10) - 복잡한 응답
+- [ ] SendMessages (101) - 메시지 구조
+
+### 7.4 4단계: 전체 지원
+- [ ] 나머지 47개 command
+- [ ] TCP 세그먼트 재조립
+- [ ] 에러 메시지 상세화
+
+---
+
+## 8. 추가 참고 자료
+
+### 8.1 다른 SDK 구현
+- **Python SDK**: (있다면) Python 구현 참고
+- **Go SDK**: (있다면) Go 구현 참고
+
+### 8.2 테스트 데이터
+- `core/integration/tests/**/*.rs` - 통합 테스트
+- 각 command 파일의 `#[cfg(test)]` - 단위 테스트
+
+### 8.3 Wireshark Lua API
+- 공식 가이드: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html
+- 실습 파일: https://gist.github.com/YangSiJun528/df80609ad4b4bcf0375fbe5c92ce5388
 
 ---
 
 ## 9. 버전 정보
 
 - **작성일**: 2025-11-07
-- **기준 코드**: iggy 프로젝트 최신 버전 (commit: f0d3d50e)
+- **기준 코드**: iggy 프로젝트 (commit: f0d3d50e)
 - **참고 브랜치**: temp2-feat/custom-wireshark-dissector
+- **문서 버전**: 2.0 (Lua Dissector 구현 가이드)
