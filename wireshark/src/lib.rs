@@ -152,6 +152,36 @@ mod tests {
             .collect()
     }
 
+    /// Helper function to print packet details for debugging
+    fn print_packet_json(packets: &[Value], show_all: bool) {
+        println!("\n=== Captured Packets JSON ===");
+
+        for (idx, packet) in packets.iter().enumerate() {
+            println!("\n--- Packet {} ---", idx);
+
+            if show_all {
+                // Print full packet JSON
+                println!("{}", serde_json::to_string_pretty(packet).unwrap_or_else(|_| "Error serializing packet".to_string()));
+            } else {
+                // Print only relevant layers: TCP and Iggy
+                if let Some(layers) = packet["_source"]["layers"].as_object() {
+                    // TCP layer
+                    // if let Some(tcp) = layers.get("tcp") {
+                    //     println!("TCP Layer:");
+                    //     println!("{}", serde_json::to_string_pretty(tcp).unwrap_or_else(|_| "Error".to_string()));
+                    // }
+
+                    // Iggy layer
+                    if let Some(iggy) = layers.get("iggy") {
+                        println!("\nIggy Protocol Layer:");
+                        println!("{}", serde_json::to_string_pretty(iggy).unwrap_or_else(|_| "Error".to_string()));
+                    }
+                }
+            }
+        }
+        println!("\n=== End of Packets ===\n");
+    }
+
     #[tokio::test]
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
@@ -178,11 +208,15 @@ mod tests {
         let packets = capture.analyze()?;
         let iggy_packets = extract_iggy_packets(&packets);
 
+        println!("Total packets captured: {}", packets.len());
+        println!("Iggy packets found: {}", iggy_packets.len());
+
+        // Print packet JSON for debugging
+        print_packet_json(&packets, false);
+
         if iggy_packets.is_empty() {
             return Err("No Iggy packets captured".into());
         }
-
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
 
         // Verify we have both Ping request and response
         let mut found_request = false;
@@ -280,15 +314,19 @@ mod tests {
         let packets = capture.analyze()?;
         let iggy_packets = extract_iggy_packets(&packets);
 
+        println!("Total packets captured: {}", packets.len());
+        println!("Iggy packets found: {}", iggy_packets.len());
+
+        // Print packet JSON for debugging
+        print_packet_json(&packets, false);
+
         if iggy_packets.is_empty() {
             return Err("No Iggy packets captured".into());
         }
 
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
-
         // Verify we have both LoginUser request and response
         let mut found_request = false;
-        let mut found_response = false;
+        let mut _found_response = false; // TODO: uncomment assertion when response dissector is implemented
 
         for (idx, packet) in iggy_packets.iter().enumerate() {
             let iggy = &packet["_source"]["layers"]["iggy"];
@@ -331,7 +369,7 @@ mod tests {
                     if status_val == "0" {
                         // Check if response has user_id field (LoginUser specific)
                         if let Some(user_id) = iggy.get("iggy.login.user_id") {
-                            found_response = true;
+                            _found_response = true;
                             println!("Packet {}: ✓ LoginUser response found", idx);
                             println!("  - Status: OK (0)");
                             println!("  - User ID: {}", user_id.as_str().unwrap_or("N/A"));
