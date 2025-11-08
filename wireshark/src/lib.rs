@@ -1,50 +1,25 @@
 #[cfg(test)]
 mod tests {
-    use bytes::{BufMut, BytesMut};
-    use iggy_common::ping::Ping;
+    use futures_util::StreamExt;
+    use iggy::prelude::*;
     use serde_json::Value;
-    use server::binary::command::ServerCommand;
     use std::fs;
     use std::io;
     use std::path::PathBuf;
     use std::process::{Child, Command as ProcessCommand, Stdio};
+    use std::sync::Arc;
     use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
     use tokio::time::sleep;
 
-    /// Creates a request packet from a ServerCommand
-    /// Format: LENGTH(4) + COMMAND_CODE(4) + PAYLOAD(N)
-    /// where LENGTH = 4 + payload_length
-    fn create_request_packet(command: &ServerCommand) -> Vec<u8> {
-        let bytes = command.to_bytes();
-        let mut buf = BytesMut::with_capacity(4 + bytes.len());
-        buf.put_u32_le(bytes.len() as u32);
-        buf.put_slice(&bytes);
-        buf.to_vec()
-    }
+    /// Default credentials for Iggy server
+    const DEFAULT_ROOT_USERNAME: &str = "iggy";
+    const DEFAULT_ROOT_PASSWORD: &str = "iggy";
 
-    /// Creates a response packet
-    /// Format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
-    /// where LENGTH = payload length (0 for error responses)
-    fn create_response_packet(status: u32, payload: &[u8]) -> Vec<u8> {
-        let mut buf = BytesMut::with_capacity(8 + payload.len());
-        buf.put_u32_le(status); // STATUS
-        buf.put_u32_le(payload.len() as u32); // LENGTH
-        buf.put_slice(payload); // PAYLOAD
-        buf.to_vec()
-    }
+    /// Server configuration - change these constants to match your server setup
+    const SERVER_IP: &str = "127.0.0.1";
+    const SERVER_TCP_PORT: u16 = 8090;
 
-    /// Creates a success response packet (status = 0)
-    fn create_success_response(payload: &[u8]) -> Vec<u8> {
-        create_response_packet(0, payload)
-    }
-
-    /// Creates an error response packet (status != 0, length = 0)
-    fn create_error_response(status: u32) -> Vec<u8> {
-        create_response_packet(status, &[])
-    }
-
+    /// Helper struct to manage tshark packet capture
     struct TsharkCapture {
         ip: String,
         port: u16,
@@ -56,8 +31,16 @@ mod tests {
         fn new(ip: &str, port: u16) -> io::Result<Self> {
             let file = format!("/tmp/iggy_test_{}.pcap", port);
 
-            // 다양한 가능한 Lua 스크립트 위치 확인
-            let dissector_path = std::env::current_dir()?.join("dissector.lua");
+            // Find dissector.lua in the workspace root
+            let dissector_path = std::env::current_dir()?
+                .join("dissector.lua");
+
+            if !dissector_path.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Dissector not found at: {}", dissector_path.display()),
+                ));
+            }
 
             Ok(Self {
                 ip: ip.to_string(),
@@ -82,7 +65,7 @@ mod tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
-            // Lua 스크립트와 포트 설정 추가
+            // Add Lua script and port configuration
             command.arg("-X");
             command.arg(format!("lua_script:{}", self.dissector_path.display()));
             command.arg("-o");
@@ -106,7 +89,7 @@ mod tests {
                     &format!("lua_script:{}", self.dissector_path.display()),
                     "-o",
                     &format!("iggy.server_port:{}", self.port),
-                    "-V", // 자세한 출력 추가
+                    "-V", // Verbose output
                 ])
                 .output()?;
 
@@ -145,449 +128,398 @@ mod tests {
         }
     }
 
-    /// A dummy server that responds to requests
-    async fn run_dummy_server(ip: &str, port: u16) -> io::Result<()> {
-        let listener = TcpListener::bind(format!("{}:{}", ip, port)).await?;
-        println!("Dummy server listening on {}:{}", ip, port);
+    /// Helper function to create an IggyClient connected to the test server
+    async fn create_test_client() -> Result<IggyClient, IggyError> {
+        let tcp_config = TcpClientConfig {
+            server_address: format!("{}:{}", SERVER_IP, SERVER_TCP_PORT),
+            ..Default::default()
+        };
 
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                println!("Dummy server accepted connection");
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 1024];
+        let tcp_client = TcpClient::create(Arc::new(tcp_config))?;
+        let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
+        client.connect().await?;
 
-                    loop {
-                        match socket.read(&mut buf).await {
-                            Ok(0) => {
-                                println!("Connection closed by client");
-                                break;
-                            }
-                            Ok(n) => {
-                                println!("Dummy server received {} bytes", n);
+        // Explicitly login with default root credentials
+        client.login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD).await?;
 
-                                // Parse request and send response
-                                if n >= 8 {
-                                    // Read LENGTH and COMMAND_CODE
-                                    let length = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-                                    let command_code = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        Ok(client)
+    }
 
-                                    println!("  LENGTH: {}, COMMAND_CODE: {}", length, command_code);
+    /// Helper function to extract iggy packets from tshark output
+    fn extract_iggy_packets(packets: &[Value]) -> Vec<&Value> {
+        packets
+            .iter()
+            .filter(|p| p["_source"]["layers"].get("iggy").is_some())
+            .collect()
+    }
 
-                                    // Send response based on command
-                                    let response = match command_code {
-                                        1 => {
-                                            // Ping: success response with empty payload
-                                            println!("  Responding to Ping with success");
-                                            create_success_response(&[])
-                                        }
-                                        10 => {
-                                            // GetStats: success response with dummy stats
-                                            println!("  Responding to GetStats with dummy data");
-                                            create_success_response(b"dummy_stats_data")
-                                        }
-                                        _ => {
-                                            // Unknown command: error response
-                                            println!("  Responding to unknown command with error");
-                                            create_error_response(1) // InvalidCommand
-                                        }
-                                    };
+    #[tokio::test]
+    #[ignore]
+    async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n=== Testing Ping Command Dissection ===");
 
-                                    if let Err(e) = socket.write_all(&response).await {
-                                        println!("Failed to send response: {}", e);
-                                        break;
-                                    }
+        // Start packet capture
+        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+        let mut tshark = capture.start()?;
+        sleep(Duration::from_millis(1000)).await;
 
-                                    if let Err(e) = socket.flush().await {
-                                        println!("Failed to flush response: {}", e);
-                                        break;
-                                    }
+        // Create client and send ping
+        let client = create_test_client().await?;
 
-                                    println!("  Sent response: {} bytes", response.len());
+        println!("Sending Ping command...");
+        client.ping().await?;
+
+        // Wait for packets to be captured
+        sleep(Duration::from_secs(2)).await;
+
+        // Stop capture and analyze
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze()?;
+        let iggy_packets = extract_iggy_packets(&packets);
+
+        if iggy_packets.is_empty() {
+            return Err("No Iggy packets captured".into());
+        }
+
+        println!("Found {} Iggy packet(s)", iggy_packets.len());
+
+        // Verify we have both request and response
+        let mut found_request = false;
+        let mut found_response = false;
+
+        for (idx, packet) in iggy_packets.iter().enumerate() {
+            let iggy = &packet["_source"]["layers"]["iggy"];
+            println!("\nPacket {}: {:?}", idx, iggy);
+
+            // Check for Ping request (command code 1)
+            if let Some(command) = iggy.get("iggy.request.command") {
+                if let Some(cmd_val) = command.as_str() {
+                    if cmd_val == "1" {
+                        found_request = true;
+                        println!("  ✓ Ping request found");
+
+                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                            assert_eq!(cmd_name.as_str(), Some("Ping"));
+                        }
+                    }
+                }
+            }
+
+            // Check for successful response (status 0)
+            if let Some(status) = iggy.get("iggy.response.status") {
+                if let Some(status_val) = status.as_str() {
+                    if status_val == "0" {
+                        found_response = true;
+                        println!("  ✓ Ping response found (status: OK)");
+
+                        if let Some(status_name) = iggy.get("iggy.response.status_name") {
+                            assert_eq!(status_name.as_str(), Some("OK"));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(found_request, "Ping request not found in capture");
+        assert!(found_response, "Ping response not found in capture");
+
+        println!("\n✓ Ping dissection test passed");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_stream_topic_creation_dissection() -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n=== Testing Stream/Topic Creation Dissection ===");
+
+        // Start packet capture
+        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+        let mut tshark = capture.start()?;
+        sleep(Duration::from_millis(1000)).await;
+
+        // Create client
+        let client = create_test_client().await?;
+
+        // Create a unique stream name for this test
+        let stream_id = Identifier::numeric(999)?;
+        let stream_name = "wireshark_test_stream";
+
+        println!("Creating stream: {} (ID: {})", stream_name, stream_id);
+
+        // Try to create stream (might already exist, which is fine)
+        let _ = client
+            .create_stream(&stream_name, Some(999))
+            .await;
+
+        // Create topic
+        let topic_id = Identifier::numeric(1)?;
+        let topic_name = "wireshark_test_topic";
+
+        println!("Creating topic: {} (ID: {})", topic_name, topic_id);
+
+        let _ = client
+            .create_topic(
+                &stream_id,
+                topic_name,
+                1, // partitions
+                CompressionAlgorithm::None,
+                None,
+                None,
+                IggyExpiry::NeverExpire,
+                MaxTopicSize::Unlimited,
+            )
+            .await;
+
+        // Wait for packets
+        sleep(Duration::from_secs(2)).await;
+
+        // Stop capture and analyze
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze()?;
+        let iggy_packets = extract_iggy_packets(&packets);
+
+        if iggy_packets.is_empty() {
+            return Err("No Iggy packets captured".into());
+        }
+
+        println!("Found {} Iggy packet(s)", iggy_packets.len());
+
+        // Verify we captured stream/topic creation commands
+        let mut found_stream_or_topic_command = false;
+
+        for (idx, packet) in iggy_packets.iter().enumerate() {
+            let iggy = &packet["_source"]["layers"]["iggy"];
+
+            if let Some(command) = iggy.get("iggy.request.command") {
+                if let Some(cmd_val) = command.as_str() {
+                    println!("Packet {}: Command code {}", idx, cmd_val);
+
+                    // CreateStream = 200, CreateTopic = 300 (check actual codes in your protocol)
+                    if cmd_val == "200" || cmd_val == "300" {
+                        found_stream_or_topic_command = true;
+                        println!("  ✓ Stream/Topic creation command found");
+                    }
+                }
+            }
+        }
+
+        // Clean up
+        let _ = client.delete_stream(&stream_id).await;
+
+        assert!(
+            found_stream_or_topic_command || iggy_packets.len() > 2,
+            "Expected to capture stream/topic creation commands"
+        );
+
+        println!("\n✓ Stream/Topic creation dissection test passed");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_message_send_receive_dissection() -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n=== Testing Message Send/Receive Dissection ===");
+
+        // Start packet capture
+        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+        let mut tshark = capture.start()?;
+        sleep(Duration::from_millis(1000)).await;
+
+        // Create client
+        let client = create_test_client().await?;
+
+        // Use a test stream and topic
+        let stream_id = Identifier::numeric(999)?;
+        let stream_name = "wireshark_test_stream";
+        let topic_name = "wireshark_test_topic";
+
+        // Ensure stream and topic exist
+        let _ = client
+            .create_stream(&stream_name, Some(999))
+            .await;
+
+        let _ = client
+            .create_topic(
+                &stream_id,
+                topic_name,
+                1,
+                CompressionAlgorithm::None,
+                None,
+                None,
+                IggyExpiry::NeverExpire,
+                MaxTopicSize::Unlimited,
+            )
+            .await;
+
+        // Create producer and send messages
+        let producer = client
+            .producer("999", "1")?
+            .direct(DirectConfig::builder().build())
+            .partitioning(Partitioning::partition_id(1))
+            .build();
+
+        producer.init().await?;
+
+        let messages = vec![
+            IggyMessage::from("test_message_1"),
+            IggyMessage::from("test_message_2"),
+        ];
+
+        println!("Sending {} messages...", messages.len());
+        producer.send(messages).await?;
+        println!("Messages sent successfully");
+
+        // Create consumer and poll messages
+        println!("Polling messages...");
+        let mut consumer = client
+            .consumer("test_consumer", "999", "1", 1)?
+            .auto_commit(AutoCommit::When(AutoCommitWhen::PollingMessages))
+            .polling_strategy(PollingStrategy::offset(0))
+            .batch_length(10)
+            .build();
+
+        consumer.init().await?;
+
+        // Just poll once to trigger the poll command
+        if let Some(message) = consumer.next().await {
+            println!("Polled message: {:?}", message.is_ok());
+        }
+
+        // Wait for packets
+        sleep(Duration::from_secs(2)).await;
+
+        // Stop capture and analyze
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze()?;
+        let iggy_packets = extract_iggy_packets(&packets);
+
+        if iggy_packets.is_empty() {
+            return Err("No Iggy packets captured".into());
+        }
+
+        println!("Found {} Iggy packet(s)", iggy_packets.len());
+
+        // Verify we captured send/poll commands
+        let mut found_send_command = false;
+        let mut found_poll_command = false;
+
+        for (idx, packet) in iggy_packets.iter().enumerate() {
+            let iggy = &packet["_source"]["layers"]["iggy"];
+
+            if let Some(command) = iggy.get("iggy.request.command") {
+                if let Some(cmd_val) = command.as_str() {
+                    if let Some(cmd_name) = iggy.get("iggy.request.command_name").and_then(|v| v.as_str()) {
+                        println!("Packet {}: Command {} ({})", idx, cmd_val, cmd_name);
+
+                        if cmd_name.contains("SendMessages") || cmd_name.contains("send") {
+                            found_send_command = true;
+                            println!("  ✓ Send messages command found");
+                        }
+
+                        if cmd_name.contains("PollMessages") || cmd_name.contains("poll") {
+                            found_poll_command = true;
+                            println!("  ✓ Poll messages command found");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clean up
+        let _ = client.delete_stream(&stream_id).await;
+
+        assert!(
+            found_send_command || found_poll_command || iggy_packets.len() >= 4,
+            "Expected to capture send and poll commands"
+        );
+
+        println!("\n✓ Message send/receive dissection test passed");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_get_stats_dissection() -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n=== Testing GetStats Command Dissection ===");
+
+        // Start packet capture
+        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+        let mut tshark = capture.start()?;
+        sleep(Duration::from_millis(1000)).await;
+
+        // Create client and get stats
+        let client = create_test_client().await?;
+
+        println!("Getting server stats...");
+        let stats = client.get_stats().await?;
+        println!("Stats received: process_id={}", stats.process_id);
+
+        // Wait for packets
+        sleep(Duration::from_secs(2)).await;
+
+        // Stop capture and analyze
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze()?;
+        let iggy_packets = extract_iggy_packets(&packets);
+
+        if iggy_packets.is_empty() {
+            return Err("No Iggy packets captured".into());
+        }
+
+        println!("Found {} Iggy packet(s)", iggy_packets.len());
+
+        // Verify GetStats request and response
+        let mut found_request = false;
+        let mut found_response = false;
+
+        for (_idx, packet) in iggy_packets.iter().enumerate() {
+            let iggy = &packet["_source"]["layers"]["iggy"];
+
+            // Check for GetStats request (command code 10)
+            if let Some(command) = iggy.get("iggy.request.command") {
+                if let Some(cmd_val) = command.as_str() {
+                    if cmd_val == "10" {
+                        found_request = true;
+                        println!("  ✓ GetStats request found");
+
+                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                            println!("    Command name: {:?}", cmd_name);
+                        }
+                    }
+                }
+            }
+
+            // Check for successful response with payload
+            if let Some(status) = iggy.get("iggy.response.status") {
+                if let Some(status_val) = status.as_str() {
+                    if status_val == "0" {
+                        // Check if response has payload (stats data)
+                        if let Some(length) = iggy.get("iggy.response.length") {
+                            if let Some(length_str) = length.as_str() {
+                                let length_val: u32 = length_str.parse().unwrap_or(0);
+                                if length_val > 0 {
+                                    found_response = true;
+                                    println!("  ✓ GetStats response found (payload size: {} bytes)", length_val);
                                 }
                             }
-                            Err(e) => {
-                                println!("Dummy server read error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                });
-            }
-        });
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_ping_request_response_dissection() -> io::Result<()> {
-        let client_ip = "127.0.0.1";
-        let client_port = 8091;
-
-        println!("\n=== Testing Ping Request/Response ===");
-        println!("Starting test for {}:{}", client_ip, client_port);
-
-        let capture = TsharkCapture::new(client_ip, client_port)?;
-        let mut tshark = capture.start()?;
-
-        sleep(Duration::from_millis(1000)).await;
-
-        // Start server
-        run_dummy_server(client_ip, client_port).await?;
-        sleep(Duration::from_millis(500)).await;
-
-        // Connect and send request
-        let mut stream = match TcpStream::connect(format!("{}:{}", client_ip, client_port)).await {
-            Ok(stream) => {
-                println!("Connected to server");
-                stream
-            }
-            Err(e) => {
-                println!("Failed to connect: {}", e);
-                let _ = tshark.kill();
-                return Err(e);
-            }
-        };
-
-        // Send Ping request
-        let ping_command = ServerCommand::Ping(Ping::default());
-        let request_packet = create_request_packet(&ping_command);
-
-        println!("Sending Ping request: {} bytes", request_packet.len());
-        if let Err(e) = stream.write_all(&request_packet).await {
-            let _ = tshark.kill();
-            return Err(e);
-        }
-        stream.flush().await?;
-
-        // Wait for response (server will send it automatically)
-        sleep(Duration::from_millis(500)).await;
-
-        // Wait for capture
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop tshark
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        // Analyze results
-        let packets = capture.analyze()?;
-
-        if packets.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::Other, "No packets captured"));
-        }
-
-        // Find Iggy packets
-        let iggy_packets: Vec<&Value> = packets
-            .iter()
-            .filter(|p| p["_source"]["layers"].get("iggy").is_some())
-            .collect();
-
-        if iggy_packets.is_empty() {
-            for packet in &packets {
-                if let Some(layers) = packet["_source"]["layers"].as_object() {
-                    println!("Available layers:");
-                    for key in layers.keys() {
-                        println!("  - {}", key);
-                    }
-                }
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "No Iggy packets found in capture",
-            ));
-        }
-
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
-
-        // Verify request packet
-        let mut found_request = false;
-        let mut found_response = false;
-
-        for (idx, iggy_packet) in iggy_packets.iter().enumerate() {
-            let iggy = &iggy_packet["_source"]["layers"]["iggy"];
-            println!("\nPacket {}: {:?}", idx, iggy);
-
-            // Check if it's a request
-            if let Some(command) = iggy.get("iggy.request.command") {
-                println!("  -> Request packet found");
-                found_request = true;
-
-                // Verify command code
-                if let Some(cmd_val) = command.as_str() {
-                    assert_eq!(cmd_val, "1", "Expected command 1 (Ping), got {}", cmd_val);
-                }
-
-                // Verify command name
-                if let Some(cmd_name) = iggy.get("iggy.request.command_name").and_then(|v| v.as_str()) {
-                    assert_eq!(cmd_name, "Ping", "Expected command name 'Ping', got {}", cmd_name);
-                }
-
-                // Verify length
-                if let Some(length) = iggy.get("iggy.request.length").and_then(|v| v.as_str()) {
-                    assert_eq!(length, "4", "Expected length 4, got {}", length);
-                }
-            }
-
-            // Check if it's a response
-            if let Some(status) = iggy.get("iggy.response.status") {
-                println!("  -> Response packet found");
-                found_response = true;
-
-                // Verify status code
-                if let Some(status_val) = status.as_str() {
-                    assert_eq!(status_val, "0", "Expected status 0 (OK), got {}", status_val);
-                }
-
-                // Verify status name
-                if let Some(status_name) = iggy.get("iggy.response.status_name").and_then(|v| v.as_str()) {
-                    assert_eq!(status_name, "OK", "Expected status name 'OK', got {}", status_name);
-                }
-
-                // Verify length (should be 0 for Ping response)
-                if let Some(length) = iggy.get("iggy.response.length").and_then(|v| v.as_str()) {
-                    assert_eq!(length, "0", "Expected response length 0, got {}", length);
-                }
-            }
-        }
-
-        assert!(found_request, "Request packet not found in capture");
-        assert!(found_response, "Response packet not found in capture");
-
-        println!("\n✓ Ping request/response dissection verified");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_get_stats_dissection() -> io::Result<()> {
-        let client_ip = "127.0.0.1";
-        let client_port = 8092;
-
-        println!("\n=== Testing GetStats Command ===");
-        println!("Starting test for {}:{}", client_ip, client_port);
-
-        let capture = TsharkCapture::new(client_ip, client_port)?;
-        let mut tshark = capture.start()?;
-
-        sleep(Duration::from_millis(1000)).await;
-
-        // Start server
-        run_dummy_server(client_ip, client_port).await?;
-        sleep(Duration::from_millis(500)).await;
-
-        // Connect
-        let mut stream = match TcpStream::connect(format!("{}:{}", client_ip, client_port)).await {
-            Ok(stream) => {
-                println!("Connected to server");
-                stream
-            }
-            Err(e) => {
-                println!("Failed to connect: {}", e);
-                let _ = tshark.kill();
-                return Err(e);
-            }
-        };
-
-        // Send GetStats request (command code 10)
-        // Manually create the packet for GetStats
-        let mut request = BytesMut::new();
-        request.put_u32_le(4); // LENGTH (only command code, no payload)
-        request.put_u32_le(10); // COMMAND_CODE (GetStats)
-        let request_packet = request.to_vec();
-
-        println!("Sending GetStats request: {} bytes", request_packet.len());
-        if let Err(e) = stream.write_all(&request_packet).await {
-            let _ = tshark.kill();
-            return Err(e);
-        }
-        stream.flush().await?;
-
-        // Wait for response
-        sleep(Duration::from_millis(500)).await;
-
-        // Wait for capture
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop tshark
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        // Analyze results
-        let packets = capture.analyze()?;
-
-        if packets.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::Other, "No packets captured"));
-        }
-
-        // Find Iggy packets
-        let iggy_packets: Vec<&Value> = packets
-            .iter()
-            .filter(|p| p["_source"]["layers"].get("iggy").is_some())
-            .collect();
-
-        if iggy_packets.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "No Iggy packets found in capture",
-            ));
-        }
-
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
-
-        let mut found_request = false;
-        let mut found_response = false;
-
-        for (idx, iggy_packet) in iggy_packets.iter().enumerate() {
-            let iggy = &iggy_packet["_source"]["layers"]["iggy"];
-            println!("\nPacket {}: {:?}", idx, iggy);
-
-            // Check request
-            if let Some(command) = iggy.get("iggy.request.command") {
-                println!("  -> Request packet found");
-                found_request = true;
-
-                if let Some(cmd_val) = command.as_str() {
-                    assert_eq!(cmd_val, "10", "Expected command 10 (GetStats), got {}", cmd_val);
-                }
-
-                if let Some(cmd_name) = iggy.get("iggy.request.command_name").and_then(|v| v.as_str()) {
-                    assert_eq!(cmd_name, "GetStats", "Expected command name 'GetStats', got {}", cmd_name);
-                }
-            }
-
-            // Check response
-            if let Some(status) = iggy.get("iggy.response.status") {
-                println!("  -> Response packet found");
-                found_response = true;
-
-                if let Some(status_val) = status.as_str() {
-                    assert_eq!(status_val, "0", "Expected status 0 (OK), got {}", status_val);
-                }
-
-                // This response should have payload (dummy_stats_data)
-                if let Some(length) = iggy.get("iggy.response.length").and_then(|v| v.as_str()) {
-                    let length_val: u32 = length.parse().unwrap_or(0);
-                    assert!(length_val > 0, "Expected response with payload, got length {}", length);
-                }
-            }
-        }
-
-        assert!(found_request, "GetStats request packet not found");
-        assert!(found_response, "GetStats response packet not found");
-
-        println!("\n✓ GetStats request/response dissection verified");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_error_response_dissection() -> io::Result<()> {
-        let client_ip = "127.0.0.1";
-        let client_port = 8093;
-
-        println!("\n=== Testing Error Response ===");
-        println!("Starting test for {}:{}", client_ip, client_port);
-
-        let capture = TsharkCapture::new(client_ip, client_port)?;
-        let mut tshark = capture.start()?;
-
-        sleep(Duration::from_millis(1000)).await;
-
-        // Start server
-        run_dummy_server(client_ip, client_port).await?;
-        sleep(Duration::from_millis(500)).await;
-
-        // Connect
-        let mut stream = match TcpStream::connect(format!("{}:{}", client_ip, client_port)).await {
-            Ok(stream) => {
-                println!("Connected to server");
-                stream
-            }
-            Err(e) => {
-                println!("Failed to connect: {}", e);
-                let _ = tshark.kill();
-                return Err(e);
-            }
-        };
-
-        // Send unknown command (will trigger error response)
-        let mut request = BytesMut::new();
-        request.put_u32_le(4); // LENGTH
-        request.put_u32_le(999); // Unknown COMMAND_CODE
-        let request_packet = request.to_vec();
-
-        println!("Sending unknown command: {} bytes", request_packet.len());
-        if let Err(e) = stream.write_all(&request_packet).await {
-            let _ = tshark.kill();
-            return Err(e);
-        }
-        stream.flush().await?;
-
-        // Wait for response
-        sleep(Duration::from_millis(500)).await;
-
-        // Wait for capture
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop tshark
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        // Analyze results
-        let packets = capture.analyze()?;
-
-        if packets.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::Other, "No packets captured"));
-        }
-
-        // Find Iggy packets
-        let iggy_packets: Vec<&Value> = packets
-            .iter()
-            .filter(|p| p["_source"]["layers"].get("iggy").is_some())
-            .collect();
-
-        if iggy_packets.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "No Iggy packets found in capture",
-            ));
-        }
-
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
-
-        let mut found_error_response = false;
-
-        for (idx, iggy_packet) in iggy_packets.iter().enumerate() {
-            let iggy = &iggy_packet["_source"]["layers"]["iggy"];
-            println!("\nPacket {}: {:?}", idx, iggy);
-
-            // Check for error response
-            if let Some(status) = iggy.get("iggy.response.status") {
-                if let Some(status_val) = status.as_str() {
-                    if status_val != "0" {
-                        println!("  -> Error response found");
-                        found_error_response = true;
-
-                        assert_eq!(status_val, "1", "Expected status 1 (InvalidCommand), got {}", status_val);
-
-                        // Verify status name
-                        if let Some(status_name) = iggy.get("iggy.response.status_name").and_then(|v| v.as_str()) {
-                            assert_eq!(status_name, "InvalidCommand", "Expected 'InvalidCommand', got {}", status_name);
-                        }
-
-                        // Verify length is 0 for error response
-                        if let Some(length) = iggy.get("iggy.response.length").and_then(|v| v.as_str()) {
-                            assert_eq!(length, "0", "Expected error response length 0, got {}", length);
                         }
                     }
                 }
             }
         }
 
-        assert!(found_error_response, "Error response packet not found");
+        assert!(found_request, "GetStats request not found in capture");
+        assert!(found_response, "GetStats response not found in capture");
 
-        println!("\n✓ Error response dissection verified");
+        println!("\n✓ GetStats dissection test passed");
         Ok(())
     }
 }

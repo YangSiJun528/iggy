@@ -9894,10 +9894,9 @@ dependencies = [
 name = "wireshark"
 version = "0.1.0"
 dependencies = [
- "bytes",
- "iggy_common",
+ "futures-util",
+ "iggy",
  "serde_json",
- "server",
  "tokio",
 ]
 
