@@ -248,22 +248,23 @@ mod tests {
             }
 
             // Check for Ping response (status 0, no payload)
-            if let Some(status) = iggy.get("iggy.response.status") {
-                if let Some(status_val) = status.as_str() {
-                    // Check if this is a Ping response by looking at the message type
-                    if let Some(msg_type) = iggy.get("iggy.message_type") {
-                        if msg_type.as_str() == Some("Response") && status_val == "0" {
-                            // Check response length (should be 0 for Ping)
-                            if let Some(length) = iggy.get("iggy.response.length") {
-                                if length.as_str() == Some("0") {
-                                    found_response = true;
-                                    println!("Packet {}: ✓ Ping response found", idx);
-                                    println!("  - Status: OK (0)");
-                                    println!("  - Response length: 0");
+            if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                if cmd_name.as_str() == Some("Ping") {
+                    if let Some(status) = iggy.get("iggy.response.status") {
+                        if let Some(status_val) = status.as_str() {
+                            if status_val == "0" {
+                                // Check response length (should be 0 for Ping)
+                                if let Some(length) = iggy.get("iggy.response.length") {
+                                    if length.as_str() == Some("0") {
+                                        found_response = true;
+                                        println!("Packet {}: ✓ Ping response found", idx);
+                                        println!("  - Status: OK (0)");
+                                        println!("  - Response length: 0");
 
-                                    // Verify status name
-                                    if let Some(status_name) = iggy.get("iggy.response.status_name") {
-                                        assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
+                                        // Verify status name
+                                        if let Some(status_name) = iggy.get("iggy.response.status_name") {
+                                            assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
+                                        }
                                     }
                                 }
                             }
@@ -326,7 +327,7 @@ mod tests {
 
         // Verify we have both LoginUser request and response
         let mut found_request = false;
-        let mut _found_response = false; // TODO: uncomment assertion when response dissector is implemented
+        let mut found_response = false;
 
         for (idx, packet) in iggy_packets.iter().enumerate() {
             let iggy = &packet["_source"]["layers"]["iggy"];
@@ -364,25 +365,31 @@ mod tests {
             }
 
             // Check for LoginUser response (status 0 with user_id payload)
-            if let Some(status) = iggy.get("iggy.response.status") {
-                if let Some(status_val) = status.as_str() {
-                    if status_val == "0" {
-                        // Check if response has user_id field (LoginUser specific)
-                        if let Some(user_id) = iggy.get("iggy.login.user_id") {
-                            _found_response = true;
-                            println!("Packet {}: ✓ LoginUser response found", idx);
-                            println!("  - Status: OK (0)");
-                            println!("  - User ID: {}", user_id.as_str().unwrap_or("N/A"));
+            if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                if cmd_name.as_str() == Some("LoginUser") {
+                    if let Some(status) = iggy.get("iggy.response.status") {
+                        if let Some(status_val) = status.as_str() {
+                            if status_val == "0" {
+                                // Check if response has payload_tree with user_id field
+                                if let Some(payload_tree) = iggy.get("iggy.response.payload_tree") {
+                                    if let Some(user_id) = payload_tree.get("iggy.login.user_id") {
+                                        found_response = true;
+                                        println!("Packet {}: ✓ LoginUser response found", idx);
+                                        println!("  - Status: OK (0)");
+                                        println!("  - User ID: {}", user_id.as_str().unwrap_or("N/A"));
 
-                            // Verify status name
-                            if let Some(status_name) = iggy.get("iggy.response.status_name") {
-                                assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
-                            }
+                                        // Verify status name
+                                        if let Some(status_name) = iggy.get("iggy.response.status_name") {
+                                            assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
+                                        }
 
-                            // Verify response length (should be 4 for user_id u32)
-                            if let Some(length) = iggy.get("iggy.response.length") {
-                                assert_eq!(length.as_str(), Some("4"), "LoginUser response length should be 4");
-                                println!("  - Response length: 4");
+                                        // Verify response length (should be 4 for user_id u32)
+                                        if let Some(length) = iggy.get("iggy.response.length") {
+                                            assert_eq!(length.as_str(), Some("4"), "LoginUser response length should be 4");
+                                            println!("  - Response length: 4");
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -391,7 +398,7 @@ mod tests {
         }
 
         assert!(found_request, "LoginUser request (command 38) not found in capture");
-        //assert!(found_response, "LoginUser response (status 0, user_id) not found in capture"); - response 아직 안 만듦.
+        assert!(found_response, "LoginUser response (status 0, user_id) not found in capture");
 
         println!("\n✓ LoginUser dissection test passed - verified request and response");
         Ok(())
