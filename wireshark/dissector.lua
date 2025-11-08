@@ -161,12 +161,17 @@ local COMMANDS = {
             if not offset then return end
         end,
         response_dissector = function(buffer, tree, offset)
+            -- LoginUser response payload: user_id (u32, little-endian)
+            -- Reference: core/binary_protocol/src/utils/mapper.rs:455-465
             local buflen = buffer:len()
+
+            -- Need 4 bytes for user_id
             if offset + 4 > buflen then
+                tree:add("Incomplete LoginUser response: expected 4 bytes for user_id"):set_generated()
                 return
             end
 
-            -- User ID (u32, little-endian)
+            -- Parse user_id (u32, little-endian)
             tree:add_le(f_login_user_id, buffer(offset, 4))
         end,
     },
@@ -338,33 +343,45 @@ local function dissect_response(buffer, pinfo, tree)
     -- Length field
     subtree:add_le(f_resp_length, buffer(4, 4))
 
+    -- Get last request code for this TCP stream
+    local tcp_stream = tcp_stream_field()
+    local command_code = tcp_stream and stream_requests[tcp_stream.value]
+    local command_info = command_code and COMMANDS[command_code]
+
+    -- Add command name to response if we know which request this is responding to
+    if command_info then
+        subtree:add(f_req_command_name, command_info.name):set_generated()
+    end
+
     -- Payload
     local payload_len = total_len - 8
     if payload_len > 0 then
         local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
 
-        -- Get last request code for this TCP stream
-        local tcp_stream = tcp_stream_field()
-        local command_code = tcp_stream and stream_requests[tcp_stream.value]
-        local command_info = command_code and COMMANDS[command_code]
-
         if command_info then
-            subtree:add(f_req_command_name, command_info.name):set_generated()
-
             -- Use command-specific response dissector if available (only for success responses)
             if status == 0 and command_info.response_dissector then
+                -- Call response dissector with full buffer and offset pointing to payload start
                 command_info.response_dissector(buffer, payload_tree, 8)
+            elseif status ~= 0 then
+                -- Error response - payload might contain error message
+                payload_tree:add("Error response (no payload dissector for error responses)"):set_generated()
             end
         else
-            subtree:add("Request not captured or unknown"):set_generated()
+            payload_tree:add("Request not captured or unknown - cannot dissect payload"):set_generated()
         end
+    elseif not command_info then
+        -- No payload and unknown request
+        subtree:add("Request not captured or unknown"):set_generated()
     end
 
     -- Update info column
+    local command_name_str = command_info and command_info.name or "Unknown"
     if status == 0 then
-        pinfo.cols.info:set(string.format("Response: OK (length=%d)", length))
+        pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name_str, length))
     else
-        pinfo.cols.info:set(string.format("Response: %s (status=%d, length=%d)", status_name, status, length))
+        pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
+            command_name_str, status_name, status, length))
         subtree:add_proto_expert_info(ef_error_status, string.format("Error status: %d", status))
     end
 
