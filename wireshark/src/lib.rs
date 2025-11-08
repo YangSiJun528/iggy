@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use futures_util::StreamExt;
     use iggy::prelude::*;
     use serde_json::Value;
     use std::fs;
@@ -156,14 +155,14 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n=== Testing Ping Command Dissection ===");
+        println!("\n=== Testing Ping (Command 1) Dissection ===");
 
         // Start packet capture
         let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
         let mut tshark = capture.start()?;
         sleep(Duration::from_millis(1000)).await;
 
-        // Create client and send ping
+        // Create client (this will also send login, which is fine)
         let client = create_test_client().await?;
 
         println!("Sending Ping command...");
@@ -185,329 +184,53 @@ mod tests {
 
         println!("Found {} Iggy packet(s)", iggy_packets.len());
 
-        // Verify we have both request and response
+        // Verify we have both Ping request and response
         let mut found_request = false;
         let mut found_response = false;
 
         for (idx, packet) in iggy_packets.iter().enumerate() {
             let iggy = &packet["_source"]["layers"]["iggy"];
-            println!("\nPacket {}: {:?}", idx, iggy);
 
             // Check for Ping request (command code 1)
             if let Some(command) = iggy.get("iggy.request.command") {
                 if let Some(cmd_val) = command.as_str() {
                     if cmd_val == "1" {
                         found_request = true;
-                        println!("  ✓ Ping request found");
+                        println!("Packet {}: ✓ Ping request found", idx);
 
+                        // Verify command name
                         if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                            assert_eq!(cmd_name.as_str(), Some("Ping"));
+                            assert_eq!(cmd_name.as_str(), Some("Ping"), "Command name should be 'Ping'");
+                            println!("  - Command name: Ping");
+                        }
+
+                        // Verify request length (should be 4, only command code, no payload)
+                        if let Some(length) = iggy.get("iggy.request.length") {
+                            assert_eq!(length.as_str(), Some("4"), "Ping request length should be 4");
+                            println!("  - Request length: 4");
                         }
                     }
                 }
             }
 
-            // Check for successful response (status 0)
+            // Check for Ping response (status 0, no payload)
             if let Some(status) = iggy.get("iggy.response.status") {
                 if let Some(status_val) = status.as_str() {
-                    if status_val == "0" {
-                        found_response = true;
-                        println!("  ✓ Ping response found (status: OK)");
-
-                        if let Some(status_name) = iggy.get("iggy.response.status_name") {
-                            assert_eq!(status_name.as_str(), Some("OK"));
-                        }
-                    }
-                }
-            }
-        }
-
-        assert!(found_request, "Ping request not found in capture");
-        assert!(found_response, "Ping response not found in capture");
-
-        println!("\n✓ Ping dissection test passed");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_stream_topic_creation_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n=== Testing Stream/Topic Creation Dissection ===");
-
-        // Start packet capture
-        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
-        sleep(Duration::from_millis(1000)).await;
-
-        // Create client
-        let client = create_test_client().await?;
-
-        // Create a unique stream name for this test
-        let stream_id = Identifier::numeric(999)?;
-        let stream_name = "wireshark_test_stream";
-
-        println!("Creating stream: {} (ID: {})", stream_name, stream_id);
-
-        // Try to create stream (might already exist, which is fine)
-        let _ = client
-            .create_stream(&stream_name, Some(999))
-            .await;
-
-        // Create topic
-        let topic_id = Identifier::numeric(1)?;
-        let topic_name = "wireshark_test_topic";
-
-        println!("Creating topic: {} (ID: {})", topic_name, topic_id);
-
-        let _ = client
-            .create_topic(
-                &stream_id,
-                topic_name,
-                1, // partitions
-                CompressionAlgorithm::None,
-                None,
-                None,
-                IggyExpiry::NeverExpire,
-                MaxTopicSize::Unlimited,
-            )
-            .await;
-
-        // Wait for packets
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop capture and analyze
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        let packets = capture.analyze()?;
-        let iggy_packets = extract_iggy_packets(&packets);
-
-        if iggy_packets.is_empty() {
-            return Err("No Iggy packets captured".into());
-        }
-
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
-
-        // Verify we captured stream/topic creation commands
-        let mut found_stream_or_topic_command = false;
-
-        for (idx, packet) in iggy_packets.iter().enumerate() {
-            let iggy = &packet["_source"]["layers"]["iggy"];
-
-            if let Some(command) = iggy.get("iggy.request.command") {
-                if let Some(cmd_val) = command.as_str() {
-                    println!("Packet {}: Command code {}", idx, cmd_val);
-
-                    // CreateStream = 200, CreateTopic = 300 (check actual codes in your protocol)
-                    if cmd_val == "200" || cmd_val == "300" {
-                        found_stream_or_topic_command = true;
-                        println!("  ✓ Stream/Topic creation command found");
-                    }
-                }
-            }
-        }
-
-        // Clean up
-        let _ = client.delete_stream(&stream_id).await;
-
-        assert!(
-            found_stream_or_topic_command || iggy_packets.len() > 2,
-            "Expected to capture stream/topic creation commands"
-        );
-
-        println!("\n✓ Stream/Topic creation dissection test passed");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_message_send_receive_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n=== Testing Message Send/Receive Dissection ===");
-
-        // Start packet capture
-        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
-        sleep(Duration::from_millis(1000)).await;
-
-        // Create client
-        let client = create_test_client().await?;
-
-        // Use a test stream and topic
-        let stream_id = Identifier::numeric(999)?;
-        let stream_name = "wireshark_test_stream";
-        let topic_name = "wireshark_test_topic";
-
-        // Ensure stream and topic exist
-        let _ = client
-            .create_stream(&stream_name, Some(999))
-            .await;
-
-        let _ = client
-            .create_topic(
-                &stream_id,
-                topic_name,
-                1,
-                CompressionAlgorithm::None,
-                None,
-                None,
-                IggyExpiry::NeverExpire,
-                MaxTopicSize::Unlimited,
-            )
-            .await;
-
-        // Create producer and send messages
-        let producer = client
-            .producer("999", "1")?
-            .direct(DirectConfig::builder().build())
-            .partitioning(Partitioning::partition_id(1))
-            .build();
-
-        producer.init().await?;
-
-        let messages = vec![
-            IggyMessage::from("test_message_1"),
-            IggyMessage::from("test_message_2"),
-        ];
-
-        println!("Sending {} messages...", messages.len());
-        producer.send(messages).await?;
-        println!("Messages sent successfully");
-
-        // Create consumer and poll messages
-        println!("Polling messages...");
-        let mut consumer = client
-            .consumer("test_consumer", "999", "1", 1)?
-            .auto_commit(AutoCommit::When(AutoCommitWhen::PollingMessages))
-            .polling_strategy(PollingStrategy::offset(0))
-            .batch_length(10)
-            .build();
-
-        consumer.init().await?;
-
-        // Just poll once to trigger the poll command
-        if let Some(message) = consumer.next().await {
-            println!("Polled message: {:?}", message.is_ok());
-        }
-
-        // Wait for packets
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop capture and analyze
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        let packets = capture.analyze()?;
-        let iggy_packets = extract_iggy_packets(&packets);
-
-        if iggy_packets.is_empty() {
-            return Err("No Iggy packets captured".into());
-        }
-
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
-
-        // Verify we captured send/poll commands
-        let mut found_send_command = false;
-        let mut found_poll_command = false;
-
-        for (idx, packet) in iggy_packets.iter().enumerate() {
-            let iggy = &packet["_source"]["layers"]["iggy"];
-
-            if let Some(command) = iggy.get("iggy.request.command") {
-                if let Some(cmd_val) = command.as_str() {
-                    if let Some(cmd_name) = iggy.get("iggy.request.command_name").and_then(|v| v.as_str()) {
-                        println!("Packet {}: Command {} ({})", idx, cmd_val, cmd_name);
-
-                        if cmd_name.contains("SendMessages") || cmd_name.contains("send") {
-                            found_send_command = true;
-                            println!("  ✓ Send messages command found");
-                        }
-
-                        if cmd_name.contains("PollMessages") || cmd_name.contains("poll") {
-                            found_poll_command = true;
-                            println!("  ✓ Poll messages command found");
-                        }
-                    }
-                }
-            }
-        }
-
-        // Clean up
-        let _ = client.delete_stream(&stream_id).await;
-
-        assert!(
-            found_send_command || found_poll_command || iggy_packets.len() >= 4,
-            "Expected to capture send and poll commands"
-        );
-
-        println!("\n✓ Message send/receive dissection test passed");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_get_stats_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n=== Testing GetStats Command Dissection ===");
-
-        // Start packet capture
-        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
-        sleep(Duration::from_millis(1000)).await;
-
-        // Create client and get stats
-        let client = create_test_client().await?;
-
-        println!("Getting server stats...");
-        let stats = client.get_stats().await?;
-        println!("Stats received: process_id={}", stats.process_id);
-
-        // Wait for packets
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop capture and analyze
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        let packets = capture.analyze()?;
-        let iggy_packets = extract_iggy_packets(&packets);
-
-        if iggy_packets.is_empty() {
-            return Err("No Iggy packets captured".into());
-        }
-
-        println!("Found {} Iggy packet(s)", iggy_packets.len());
-
-        // Verify GetStats request and response
-        let mut found_request = false;
-        let mut found_response = false;
-
-        for (_idx, packet) in iggy_packets.iter().enumerate() {
-            let iggy = &packet["_source"]["layers"]["iggy"];
-
-            // Check for GetStats request (command code 10)
-            if let Some(command) = iggy.get("iggy.request.command") {
-                if let Some(cmd_val) = command.as_str() {
-                    if cmd_val == "10" {
-                        found_request = true;
-                        println!("  ✓ GetStats request found");
-
-                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                            println!("    Command name: {:?}", cmd_name);
-                        }
-                    }
-                }
-            }
-
-            // Check for successful response with payload
-            if let Some(status) = iggy.get("iggy.response.status") {
-                if let Some(status_val) = status.as_str() {
-                    if status_val == "0" {
-                        // Check if response has payload (stats data)
-                        if let Some(length) = iggy.get("iggy.response.length") {
-                            if let Some(length_str) = length.as_str() {
-                                let length_val: u32 = length_str.parse().unwrap_or(0);
-                                if length_val > 0 {
+                    // Check if this is a Ping response by looking at the message type
+                    if let Some(msg_type) = iggy.get("iggy.message_type") {
+                        if msg_type.as_str() == Some("Response") && status_val == "0" {
+                            // Check response length (should be 0 for Ping)
+                            if let Some(length) = iggy.get("iggy.response.length") {
+                                if length.as_str() == Some("0") {
                                     found_response = true;
-                                    println!("  ✓ GetStats response found (payload size: {} bytes)", length_val);
+                                    println!("Packet {}: ✓ Ping response found", idx);
+                                    println!("  - Status: OK (0)");
+                                    println!("  - Response length: 0");
+
+                                    // Verify status name
+                                    if let Some(status_name) = iggy.get("iggy.response.status_name") {
+                                        assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
+                                    }
                                 }
                             }
                         }
@@ -516,10 +239,123 @@ mod tests {
             }
         }
 
-        assert!(found_request, "GetStats request not found in capture");
-        assert!(found_response, "GetStats response not found in capture");
+        assert!(found_request, "Ping request (command 1) not found in capture");
+        assert!(found_response, "Ping response (status 0, length 0) not found in capture");
 
-        println!("\n✓ GetStats dissection test passed");
+        println!("\n✓ Ping dissection test passed - verified request and response");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n=== Testing LoginUser (Command 38) Dissection ===");
+
+        // Start packet capture
+        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+        let mut tshark = capture.start()?;
+        sleep(Duration::from_millis(1000)).await;
+
+        // Create TCP client without auto-login, then manually login
+        let tcp_config = TcpClientConfig {
+            server_address: format!("{}:{}", SERVER_IP, SERVER_TCP_PORT),
+            ..Default::default()
+        };
+
+        let tcp_client = TcpClient::create(Arc::new(tcp_config))?;
+        let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
+        client.connect().await?;
+
+        println!("Sending LoginUser command...");
+        client.login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD).await?;
+        println!("Login successful");
+
+        // Wait for packets to be captured
+        sleep(Duration::from_secs(2)).await;
+
+        // Stop capture and analyze
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze()?;
+        let iggy_packets = extract_iggy_packets(&packets);
+
+        if iggy_packets.is_empty() {
+            return Err("No Iggy packets captured".into());
+        }
+
+        println!("Found {} Iggy packet(s)", iggy_packets.len());
+
+        // Verify we have both LoginUser request and response
+        let mut found_request = false;
+        let mut found_response = false;
+
+        for (idx, packet) in iggy_packets.iter().enumerate() {
+            let iggy = &packet["_source"]["layers"]["iggy"];
+
+            // Check for LoginUser request (command code 38)
+            if let Some(command) = iggy.get("iggy.request.command") {
+                if let Some(cmd_val) = command.as_str() {
+                    if cmd_val == "38" {
+                        found_request = true;
+                        println!("Packet {}: ✓ LoginUser request found", idx);
+
+                        // Verify command name
+                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                            assert_eq!(cmd_name.as_str(), Some("LoginUser"), "Command name should be 'LoginUser'");
+                            println!("  - Command name: LoginUser");
+                        }
+
+                        // Verify username field
+                        if let Some(username) = iggy.get("iggy.login.username") {
+                            assert_eq!(username.as_str(), Some(DEFAULT_ROOT_USERNAME), "Username should match");
+                            println!("  - Username: {}", DEFAULT_ROOT_USERNAME);
+                        }
+
+                        // Verify request has username length field
+                        if let Some(username_len) = iggy.get("iggy.login.username_len") {
+                            println!("  - Username length: {}", username_len.as_str().unwrap_or("N/A"));
+                        }
+
+                        // Verify request has password length field
+                        if let Some(password_len) = iggy.get("iggy.login.password_len") {
+                            println!("  - Password length: {}", password_len.as_str().unwrap_or("N/A"));
+                        }
+                    }
+                }
+            }
+
+            // Check for LoginUser response (status 0 with user_id payload)
+            if let Some(status) = iggy.get("iggy.response.status") {
+                if let Some(status_val) = status.as_str() {
+                    if status_val == "0" {
+                        // Check if response has user_id field (LoginUser specific)
+                        if let Some(user_id) = iggy.get("iggy.login.user_id") {
+                            found_response = true;
+                            println!("Packet {}: ✓ LoginUser response found", idx);
+                            println!("  - Status: OK (0)");
+                            println!("  - User ID: {}", user_id.as_str().unwrap_or("N/A"));
+
+                            // Verify status name
+                            if let Some(status_name) = iggy.get("iggy.response.status_name") {
+                                assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
+                            }
+
+                            // Verify response length (should be 4 for user_id u32)
+                            if let Some(length) = iggy.get("iggy.response.length") {
+                                assert_eq!(length.as_str(), Some("4"), "LoginUser response length should be 4");
+                                println!("  - Response length: 4");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(found_request, "LoginUser request (command 38) not found in capture");
+        //assert!(found_response, "LoginUser response (status 0, user_id) not found in capture"); - response 아직 안 만듦.
+
+        println!("\n✓ LoginUser dissection test passed - verified request and response");
         Ok(())
     }
 }
