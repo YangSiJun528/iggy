@@ -91,7 +91,7 @@ iggy.experts = {
 -- TCP stream tracking for request-response matching
 -- Each TCP stream has a FIFO queue of request command codes
 ----------------------------------------
-local tcp_stream_field = Field.new("tcp.stream")
+local tcp_stream_field = Field.new("tcp.stream") -- 이거 위치가 애매하네,
 
 -- Private state
 local queues = {}
@@ -155,23 +155,21 @@ local COMMANDS = {
     [38] = {
         name = "LoginUser",
         request_payload_dissector = function(buffer, tree, offset)
+            -- Username & Password at least 3 bytes: core/common/src/commands/users/defaults.rs
+
             -- Username (u8 length + string)
             local username_len = buffer(offset, 1):uint()
             tree:add(f_login_req_username_len, buffer(offset, 1))
             offset = offset + 1
-            if username_len > 0 then
-                tree:add(f_login_req_username, buffer(offset, username_len))
-                offset = offset + username_len
-            end
+            tree:add(f_login_req_username, buffer(offset, username_len))
+            offset = offset + username_len
 
             -- Password (u8 length + string)
             local password_len = buffer(offset, 1):uint()
             tree:add(f_login_req_password_len, buffer(offset, 1))
             offset = offset + 1
-            if password_len > 0 then
-                tree:add(f_login_req_password, buffer(offset, password_len))
-                offset = offset + password_len
-            end
+            tree:add(f_login_req_password, buffer(offset, password_len))
+            offset = offset + password_len
 
             -- Version (u32 length + string, optional)
             local version_len = buffer(offset, 4):le_uint()
@@ -191,7 +189,7 @@ local COMMANDS = {
             end
         end,
         response_payload_dissector = function(buffer, tree, offset)
-            -- LoginUser response payload: user_id (u32, little-endian)
+            -- see: core/binary_protocol/src/utils/mapper.rs:455
             tree:add_le(f_login_resp_user_id, buffer(offset, 4))
         end,
     },
