@@ -282,66 +282,84 @@ local STATUS_CODES = {
 
 ----------------------------------------
 -- Helper: Validate request format
+-- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
+-- where LENGTH = CODE(4) + PAYLOAD(N)
+-- Total packet size = 4 + LENGTH
 ----------------------------------------
 local function is_valid_request(buffer)
     local buflen = buffer:len()
-    if buflen < 8 then
+
+    -- Need minimum 8 bytes for header (LENGTH + CODE)
+    local has_minimum_size = buflen >= 8
+    if not has_minimum_size then
         return false
     end
 
-    local first_field = buffer(0, 4):le_uint()
-    local second_field = buffer(4, 4):le_uint()
+    local length_field = buffer(0, 4):le_uint()
+    local command_code = buffer(4, 4):le_uint()
 
-    -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
-    -- where LENGTH = CODE(4) + PAYLOAD(N)
-    -- Total packet size = 4 + LENGTH
+    -- Check if command code is registered
+    local is_known_command = COMMANDS[command_code] ~= nil
 
-    -- Check if second field is a known command code
-    if COMMANDS[second_field] then
-        local expected_total = 4 + first_field
-        if expected_total == buflen and first_field >= 4 then
-            return true
-        end
-    end
+    -- Check if length field is valid (must be at least 4 for command code)
+    local has_valid_length_field = length_field >= 4
 
-    return false
+    -- Check if total packet size matches LENGTH field
+    local expected_total_size = 4 + length_field
+    local has_matching_packet_size = expected_total_size == buflen
+
+    -- Sanity check: command code should be in reasonable range
+    local has_reasonable_command_code = command_code > 0 and command_code < 1000
+
+    -- Request is valid if all conditions are met
+    local is_valid = is_known_command
+                     and has_valid_length_field
+                     and has_matching_packet_size
+                     and has_reasonable_command_code
+
+    return is_valid
 end
 
 ----------------------------------------
 -- Helper: Validate response format
+-- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
+-- Total packet size = 8 + LENGTH
 ----------------------------------------
 local function is_valid_response(buffer)
     local buflen = buffer:len()
-    if buflen < 8 then
+
+    -- Need minimum 8 bytes for header (STATUS + LENGTH)
+    local has_minimum_size = buflen >= 8
+    if not has_minimum_size then
         return false
     end
 
-    local first_field = buffer(0, 4):le_uint()
-    local second_field = buffer(4, 4):le_uint()
+    local status_code = buffer(0, 4):le_uint()
+    local length_field = buffer(4, 4):le_uint()
 
-    -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
-    -- Total packet size = 8 + LENGTH
+    -- Check if status code is in reasonable range
+    local has_reasonable_status_code = status_code < 100000
 
-    -- For error responses: STATUS != 0, LENGTH = 0
-    if first_field ~= 0 and second_field == 0 and buflen == 8 then
-        return true
-    end
+    -- Error response validation: STATUS != 0, LENGTH = 0, no payload
+    local is_error_response = status_code ~= 0
+    local has_zero_length = length_field == 0
+    local has_no_payload = buflen == 8
+    local is_valid_error_response = is_error_response
+                                    and has_zero_length
+                                    and has_no_payload
+                                    and has_reasonable_status_code
 
-    -- For success responses: STATUS = 0, LENGTH >= 0
-    if first_field == 0 then
-        local expected_total = 8 + second_field
-        if expected_total == buflen then
-            return true
-        end
-    end
+    -- Success response validation: STATUS = 0, LENGTH >= 0, payload size matches
+    local is_success_response = status_code == 0
+    local expected_total_size = 8 + length_field
+    local has_matching_packet_size = expected_total_size == buflen
+    local is_valid_success_response = is_success_response
+                                      and has_matching_packet_size
 
-    -- Additional heuristic for responses with unknown status codes
-    local expected_total = 8 + second_field
-    if expected_total == buflen and second_field < 1000000 then
-        return true
-    end
+    -- Response is valid if either error response or success response format is valid
+    local is_valid = is_valid_error_response or is_valid_success_response
 
-    return false
+    return is_valid
 end
 
 ----------------------------------------
