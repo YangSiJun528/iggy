@@ -15,6 +15,8 @@ iggy.prefs.server_port = Pref.uint("Server Port", 8090, "Target TCP server port"
 local f_message_type = ProtoField.string("iggy.message_type", "Message Type")
 
 -- Request fields
+--  ProtoField.some_type(abbr, [name], [base], [valuestring], [mask], [description])
+--  ref: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_ProtoField
 local f_req_length = ProtoField.uint32("iggy.request.length", "Length", base.DEC, nil, nil, "Length of command code + payload")
 local f_req_command = ProtoField.uint32("iggy.request.command", "Command Code", base.DEC)
 local f_req_command_name = ProtoField.string("iggy.request.command_name", "Command Name")
@@ -155,16 +157,26 @@ end
 
 ----------------------------------------
 -- Command Registry
--- Each command has:
---   - name: Command name (string)
---   - request_payload_dissector: function(buffer, tree, offset) or nil
---   - response_payload_dissector: function(buffer, tree, offset) or nil
+-- Each command MUST have:
+--   - name: Command name (non-empty string)
+--   - request_payload_dissector: function(buffer, tree, offset) - NEVER nil, use empty function if no payload
+--   - response_payload_dissector: function(buffer, tree, offset) - NEVER nil, use empty function if no payload
+--
+-- Why dissectors can't be nil:
+--   If COMMANDS[code] exists but dissector is nil, we can't tell if:
+--     1. The command has no payload (expected), or
+--     2. Someone forgot to implement the dissector (bug)
+--   Always use explicit empty function for no-payload commands.
 ----------------------------------------
 local COMMANDS = {
     [1] = {
         name = "Ping",
-        request_payload_dissector = nil,   -- No request payload
-        response_payload_dissector = nil,  -- No response payload
+        request_payload_dissector = function(buffer, tree, offset)
+            -- No request payload
+        end,
+        response_payload_dissector = function(buffer, tree, offset)
+            -- No response payload
+        end,
     },
     [38] = {
         name = "LoginUser",
@@ -201,6 +213,17 @@ local COMMANDS = {
         end,
     },
 }
+
+-- Validate all registered commands
+for code, cmd in pairs(COMMANDS) do
+    assert(type(code) == "number", "Command code must be a number")
+    assert(type(cmd.name) == "string" and cmd.name ~= "",
+        string.format("Command %d: name must be a non-empty string", code))
+    assert(type(cmd.request_payload_dissector) == "function",
+        string.format("Command %d (%s): request_payload_dissector must be a function (use empty function if no payload)", code, cmd.name))
+    assert(type(cmd.response_payload_dissector) == "function",
+        string.format("Command %d (%s): response_payload_dissector must be a function (use empty function if no payload)", code, cmd.name))
+end
 
 ----------------------------------------
 -- Status Code Registry
@@ -312,8 +335,8 @@ local function dissect_request(buffer, pinfo, tree)
     if payload_len > 0 then
         local payload_tree = subtree:add(f_req_payload, buffer(8, payload_len))
 
-        -- Use command-specific request payload dissector if available
-        if command_info and command_info.request_payload_dissector then
+        -- Use command-specific request payload dissector
+        if command_info then
             command_info.request_payload_dissector(buffer, payload_tree, 8)
         end
     end
@@ -384,11 +407,11 @@ local function dissect_response(buffer, pinfo, tree)
         local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
 
         if command_info then
-            -- Use command-specific response payload dissector if available (only for success responses)
-            if status == 0 and command_info.response_payload_dissector then
+            -- Use command-specific response payload dissector (only for success responses)
+            if status == 0 then
                 -- Call response payload dissector with full buffer and offset pointing to payload start
                 command_info.response_payload_dissector(buffer, payload_tree, 8)
-            elseif status ~= 0 then
+            else
                 -- Error response - payload might contain error message
                 payload_tree:add("Error response (no payload dissector for error responses)"):set_generated()
             end
