@@ -447,68 +447,85 @@ function iggy.dissector(buffer, pinfo, tree)
     end
 
     local buflen = buffer:len()
-
-    -- TCP Desegmentation: Step 1 - Check minimum header size
-    if buflen < 4 then
-        -- Need at least 4 bytes to read the first field (length or status)
-        pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
-        return
-    end
-
-    -- Determine direction based on port
     local server_port = iggy.prefs.server_port
     local is_request = (pinfo.dst_port == server_port)
     local is_response = (pinfo.src_port == server_port)
 
-    -- TCP Desegmentation: Step 2 - Calculate required length based on direction
+    ----------------------------------------
+    -- TCP Desegmentation: Ensure we have complete packet
+    ----------------------------------------
+
+    -- Step 1: Need at least 8 bytes for header
+    if buflen < 8 then
+        pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+        return
+    end
+
+    -- Step 2: Calculate total packet size and request more data if needed
     if is_request then
         -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
-        -- Validate and parse request
-        if buflen < 8 then
-            pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+        local length_field = buffer(0, 4):le_uint()
+        local total_len = 4 + length_field
+
+        if buflen < total_len then
+            pinfo.desegment_len = total_len - buflen
             return
         end
 
+        -- Full packet available, proceed to validation and dissection
+
+    elseif is_response then
+        -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
+        local length_field = buffer(4, 4):le_uint()
+        local total_len = 8 + length_field
+
+        if buflen < total_len then
+            pinfo.desegment_len = total_len - buflen
+            return
+        end
+
+        -- Full packet available, proceed to validation and dissection
+
+    else
+        -- Unknown direction - neither request nor response port
+        local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Unknown)")
+        pinfo.cols.info:set(string.format("Unknown direction (src=%d, dst=%d, server=%d)",
+            pinfo.src_port, pinfo.dst_port, server_port))
+        return 0
+    end
+
+    ----------------------------------------
+    -- Packet validation and dissection
+    -- At this point, we have a complete packet
+    ----------------------------------------
+
+    if is_request then
+        -- Parse and validate request
         local length_field = buffer(0, 4):le_uint()
         local command_code = buffer(4, 4):le_uint()
         local total_len = 4 + length_field
 
-        -- Validate request format
         local is_known_command = COMMANDS[command_code] ~= nil
         local is_valid_length = length_field >= 4
         local is_matching_size = total_len == buflen
         local is_reasonable_code = command_code > 0 and command_code < 1000
 
         if not (is_known_command and is_valid_length and is_matching_size and is_reasonable_code) then
-            -- Invalid request format
             local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
             subtree:add_proto_expert_info(ef_malformed_invalid_length,
-                string.format("Expected request format (dst_port=%d), but format validation failed", server_port))
+                string.format("Invalid request format (dst_port=%d)", server_port))
             pinfo.cols.info:set("Malformed request")
-            return 0
-        end
-
-        -- Check if we have full packet
-        if buflen < total_len then
-            pinfo.desegment_len = total_len - buflen
-            return
+            return buflen
         end
 
         return dissect_request(buffer, pinfo, tree)
 
     elseif is_response then
-        -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
-        -- Validate and parse response
-        if buflen < 8 then
-            pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
-            return
-        end
-
+        -- Parse and validate response
         local status_code = buffer(0, 4):le_uint()
         local length_field = buffer(4, 4):le_uint()
         local total_len = 8 + length_field
 
-        -- Validate response format
         local is_valid = false
         if status_code ~= 0 then
             -- Error response: STATUS != 0, LENGTH = 0, no payload
@@ -521,35 +538,14 @@ function iggy.dissector(buffer, pinfo, tree)
         end
 
         if not is_valid then
-            -- Invalid response format
             local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
             subtree:add_proto_expert_info(ef_malformed_invalid_length,
-                string.format("Expected response format (src_port=%d), but format validation failed", server_port))
+                string.format("Invalid response format (src_port=%d)", server_port))
             pinfo.cols.info:set("Malformed response")
-            return 0
-        end
-
-        -- Check if we have full packet
-        if buflen < total_len then
-            pinfo.desegment_len = total_len - buflen
-            return
+            return buflen
         end
 
         return dissect_response(buffer, pinfo, tree)
-
-    else
-        -- Neither request nor response port - shouldn't happen with port-based registration
-        if buflen < 8 then
-            local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
-            subtree:add_proto_expert_info(ef_malformed_too_short)
-            pinfo.cols.info:set("Malformed packet (too short)")
-            return 0
-        end
-
-        local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Unknown)")
-        pinfo.cols.info:set(string.format("Unknown direction (src=%d, dst=%d, server=%d)",
-            pinfo.src_port, pinfo.dst_port, server_port))
-        return 0
     end
 end
 
