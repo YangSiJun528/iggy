@@ -182,3 +182,12 @@ lua를 먼저 괜찮게 만들어야 함. 휴리스틱 빼는게 어려울려나
    - 이걸 위해서는 새 브랜치 파고, 영어로 내용 다시 차고 커밋 좀 다듬고...
 
 
+-----
+
+```
+cargo run --bin iggy-server -- --with-default-root-credentials
+
+cp ./wireshark/dissector.lua ~/.local/lib/wireshark/plugins/
+
+rm ~/.local/lib/wireshark/plugins/dissector.lua
+```
