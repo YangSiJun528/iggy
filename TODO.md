@@ -191,3 +191,14 @@ cp ./wireshark/dissector.lua ~/.local/lib/wireshark/plugins/
 
 rm ~/.local/lib/wireshark/plugins/dissector.lua
 ```
+
+
+-----
+
+이제 구조는 괜찮은거 같음.
+
+내가 코드 이해하고, 천천히 수정하는걸 목표로 ㄱㄱ
+
+이 지점에는 확실하게 커밋해서 체크포인트 만들고
+
+분리 계획 세우고 AI 쓰면서 괜찮은지 보기. 가능하면 일부 영역을 추상화 하는 쪽으로 가고 싶은데...
