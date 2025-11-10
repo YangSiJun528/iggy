@@ -157,18 +157,18 @@ end
 -- Command Registry
 -- Each command has:
 --   - name: Command name (string)
---   - request_dissector: function(buffer, tree, offset) or nil
---   - response_dissector: function(buffer, tree, offset) or nil
+--   - request_payload_dissector: function(buffer, tree, offset) or nil
+--   - response_payload_dissector: function(buffer, tree, offset) or nil
 ----------------------------------------
 local COMMANDS = {
     [1] = {
         name = "Ping",
-        request_dissector = nil,   -- No request payload
-        response_dissector = nil,  -- No response payload
+        request_payload_dissector = nil,   -- No request payload
+        response_payload_dissector = nil,  -- No response payload
     },
     [38] = {
         name = "LoginUser",
-        request_dissector = function(buffer, tree, offset)
+        request_payload_dissector = function(buffer, tree, offset)
             -- Username (u8 length + string)
             offset = dissect_string_u8_len(buffer, tree, offset, f_login_username_len, f_login_username)
             if not offset then return end
@@ -185,7 +185,7 @@ local COMMANDS = {
             offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_context_len, f_login_context)
             if not offset then return end
         end,
-        response_dissector = function(buffer, tree, offset)
+        response_payload_dissector = function(buffer, tree, offset)
             -- LoginUser response payload: user_id (u32, little-endian)
             -- Reference: core/binary_protocol/src/utils/mapper.rs:455-465
             local buflen = buffer:len()
@@ -312,9 +312,9 @@ local function dissect_request(buffer, pinfo, tree)
     if payload_len > 0 then
         local payload_tree = subtree:add(f_req_payload, buffer(8, payload_len))
 
-        -- Use command-specific request dissector if available
-        if command_info and command_info.request_dissector then
-            command_info.request_dissector(buffer, payload_tree, 8)
+        -- Use command-specific request payload dissector if available
+        if command_info and command_info.request_payload_dissector then
+            command_info.request_payload_dissector(buffer, payload_tree, 8)
         end
     end
 
@@ -384,10 +384,10 @@ local function dissect_response(buffer, pinfo, tree)
         local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
 
         if command_info then
-            -- Use command-specific response dissector if available (only for success responses)
-            if status == 0 and command_info.response_dissector then
-                -- Call response dissector with full buffer and offset pointing to payload start
-                command_info.response_dissector(buffer, payload_tree, 8)
+            -- Use command-specific response payload dissector if available (only for success responses)
+            if status == 0 and command_info.response_payload_dissector then
+                -- Call response payload dissector with full buffer and offset pointing to payload start
+                command_info.response_payload_dissector(buffer, payload_tree, 8)
             elseif status ~= 0 then
                 -- Error response - payload might contain error message
                 payload_tree:add("Error response (no payload dissector for error responses)"):set_generated()
