@@ -30,7 +30,8 @@ iggy.prefs.server_port = Pref.uint("Server Port", 8090, "Target TCP server port"
 --   f_message_type         - Common fields (applies to both request and response)
 --   f_req_*                - Request common fields (all requests)
 --   f_resp_*               - Response common fields (all responses)
---   f_<cmdname>_*          - Command-specific fields (e.g., f_login_* for LoginUser command)
+--   f_<cmdname>_req_*      - Command-specific request fields (e.g., f_login_req_username)
+--   f_<cmdname>_resp_*     - Command-specific response fields (e.g., f_login_resp_user_id)
 --
 -- Reference: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_ProtoField
 --   ProtoField.some_type(abbr, [name], [base], [valuestring], [mask], [description])
@@ -50,25 +51,29 @@ local f_resp_status_name = ProtoField.string("iggy.response.status_name", "Statu
 local f_resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload")
 local f_resp_payload = ProtoField.bytes("iggy.response.payload", "Payload")
 
--- Command-specific fields: LoginUser (code=38)
-local f_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
-local f_login_username = ProtoField.string("iggy.login.username", "Username")
-local f_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
-local f_login_password = ProtoField.string("iggy.login.password", "Password")
-local f_login_version_len = ProtoField.uint32("iggy.login.version_len", "Version Length", base.DEC)
-local f_login_version = ProtoField.string("iggy.login.version", "Version")
-local f_login_context_len = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
-local f_login_context = ProtoField.string("iggy.login.context", "Context")
-local f_login_user_id = ProtoField.uint32("iggy.login.user_id", "User ID", base.DEC)
+-- Command-specific fields
+-- LoginUser (code=38)
+-- Request fields
+local f_login_req_username_len = ProtoField.uint8("iggy.login.req.username_len", "Username Length", base.DEC)
+local f_login_req_username = ProtoField.string("iggy.login.req.username", "Username")
+local f_login_req_password_len = ProtoField.uint8("iggy.login.req.password_len", "Password Length", base.DEC)
+local f_login_req_password = ProtoField.string("iggy.login.req.password", "Password")
+local f_login_req_version_len = ProtoField.uint32("iggy.login.req.version_len", "Version Length", base.DEC)
+local f_login_req_version = ProtoField.string("iggy.login.req.version", "Version")
+local f_login_req_context_len = ProtoField.uint32("iggy.login.req.context_len", "Context Length", base.DEC)
+local f_login_req_context = ProtoField.string("iggy.login.req.context", "Context")
+-- Response fields
+local f_login_resp_user_id = ProtoField.uint32("iggy.login.resp.user_id", "User ID", base.DEC)
 
 iggy.fields = {
     f_message_type,
     f_req_length, f_req_command, f_req_command_name, f_req_payload,
     f_resp_status, f_resp_status_name, f_resp_length, f_resp_payload,
-    -- LoginUser fields
-    f_login_username_len, f_login_username, f_login_password_len, f_login_password,
-    f_login_version_len, f_login_version, f_login_context_len, f_login_context,
-    f_login_user_id,
+    -- LoginUser request fields
+    f_login_req_username_len, f_login_req_username, f_login_req_password_len, f_login_req_password,
+    f_login_req_version_len, f_login_req_version, f_login_req_context_len, f_login_req_context,
+    -- LoginUser response fields
+    f_login_resp_user_id,
 }
 
 ----------------------------------------
@@ -222,19 +227,19 @@ local COMMANDS = {
         name = "LoginUser",
         request_payload_dissector = function(buffer, tree, offset)
             -- Username (u8 length + string)
-            offset = dissect_string_u8_len(buffer, tree, offset, f_login_username_len, f_login_username)
+            offset = dissect_string_u8_len(buffer, tree, offset, f_login_req_username_len, f_login_req_username)
             if not offset then return end
 
             -- Password (u8 length + string)
-            offset = dissect_string_u8_len(buffer, tree, offset, f_login_password_len, f_login_password)
+            offset = dissect_string_u8_len(buffer, tree, offset, f_login_req_password_len, f_login_req_password)
             if not offset then return end
 
             -- Version (u32 length + string, optional)
-            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_version_len, f_login_version)
+            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_req_version_len, f_login_req_version)
             if not offset then return end
 
             -- Context (u32 length + string, optional)
-            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_context_len, f_login_context)
+            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_req_context_len, f_login_req_context)
             if not offset then return end
         end,
         response_payload_dissector = function(buffer, tree, offset)
@@ -250,7 +255,7 @@ local COMMANDS = {
             end
 
             -- Parse user_id (u32, little-endian)
-            tree:add_le(f_login_user_id, buffer(offset, 4))
+            tree:add_le(f_login_resp_user_id, buffer(offset, 4))
         end,
     },
 }
@@ -453,8 +458,7 @@ local function dissect_response(buffer, pinfo, tree)
                 -- Call response payload dissector with full buffer and offset pointing to payload start
                 command_info.response_payload_dissector(buffer, payload_tree, 8)
             else
-                -- Error response with payload (protocol violation will be flagged below)
-                -- Payload might contain error message, but we don't parse it
+                -- Error response has no payload
             end
         else
             -- Request not captured or unknown - cannot match response to request
