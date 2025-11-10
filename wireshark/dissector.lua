@@ -91,8 +91,6 @@ iggy.experts = {
 -- TCP stream tracking for request-response matching
 -- Each TCP stream has a FIFO queue of request command codes
 ----------------------------------------
-local tcp_stream_field = Field.new("tcp.stream") -- 이거 위치가 애매하네,
-
 -- Private state
 local queues = {}
 
@@ -217,129 +215,13 @@ local STATUS_CODES = {
 
 
 ----------------------------------------
--- Request dissector
-----------------------------------------
-local function dissect_request(buffer, pinfo, tree)
-    local length = buffer(0, 4):le_uint()
-    local total_len = 4 + length
-    local command_code = buffer(4, 4):le_uint()
-
-    local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Request")
-    subtree:add(f_message_type, "Request"):set_generated()
-
-    -- Length and command code
-    subtree:add_le(f_req_length, buffer(0, 4))
-    subtree:add_le(f_req_command, buffer(4, 4))
-
-    -- Early return for unknown commands
-    local command_info = COMMANDS[command_code]
-    if not command_info then
-        local unknown_name = string.format("Unknown(0x%x)", command_code)
-        subtree:add(f_req_command_name, unknown_name):set_generated()
-
-        local payload_len = total_len - 8
-        if payload_len > 0 then
-            subtree:add(f_req_payload, buffer(8, payload_len))
-        end
-
-        pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", unknown_name, command_code, length))
-        return total_len
-    end
-
-    -- After this point, command_info is guaranteed to exist
-    local command_name = command_info.name
-    subtree:add(f_req_command_name, command_name):set_generated()
-
-    -- Payload
-    local payload_len = total_len - 8
-    if payload_len > 0 then
-        local payload_tree = subtree:add(f_req_payload, buffer(8, payload_len))
-        command_info.request_payload_dissector(buffer, payload_tree, 8)
-    end
-
-    -- Track request code for request-response matching
-    local tcp_stream = tcp_stream_field()
-    if tcp_stream then
-        stream_queues.enqueue(tcp_stream.value, command_code)
-    end
-
-    -- Update info column
-    pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
-
-    return total_len
-end
-
-----------------------------------------
--- Response dissector
-----------------------------------------
-local function dissect_response(buffer, pinfo, tree)
-    local status = buffer(0, 4):le_uint()
-    local length = buffer(4, 4):le_uint()
-    local total_len = 8 + length
-
-    local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Response")
-    subtree:add(f_message_type, "Response"):set_generated()
-
-    -- Status code and length
-    subtree:add_le(f_resp_status, buffer(0, 4))
-    subtree:add_le(f_resp_length, buffer(4, 4))
-
-    -- Status name
-    local status_name = STATUS_CODES[status] or (status == 0 and "OK" or string.format("Error(%d)", status))
-    subtree:add(f_resp_status_name, status_name):set_generated()
-
-    -- Get matching request code for this TCP stream (FIFO order)
-    local tcp_stream = tcp_stream_field()
-    local command_code = tcp_stream and stream_queues.dequeue(tcp_stream.value)
-    local command_info = command_code and COMMANDS[command_code]
-
-    -- Early return for unknown commands (no matching request or unimplemented command)
-    if not command_info then
-        local unknown_name = "Unknown"
-        local payload_len = total_len - 8
-        if payload_len > 0 then
-            subtree:add(f_resp_payload, buffer(8, payload_len))
-        end
-
-        if status == 0 then
-            pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", unknown_name, length))
-        else
-            pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
-                unknown_name, status_name, status, length))
-        end
-        return total_len
-    end
-
-    -- After this point, command_info is guaranteed to exist
-    local command_name = command_info.name
-    subtree:add(f_req_command_name, command_name):set_generated()
-
-    -- Payload (only for success responses)
-    local payload_len = total_len - 8
-    if payload_len > 0 and status == 0 then
-        local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
-        command_info.response_payload_dissector(buffer, payload_tree, 8)
-    end
-
-    -- Update info column
-    if status == 0 then
-        pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
-    else
-        pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
-            command_name, status_name, status, length))
-    end
-
-    return total_len
-end
-
-----------------------------------------
 -- Main dissector
 ----------------------------------------
 function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
 
     -- Check for TCP connection termination and clean up queue
-    local tcp_stream = tcp_stream_field()
+    local tcp_stream = Field.new("tcp.stream")
     local tcp_flags_fin = Field.new("tcp.flags.fin")
     local tcp_flags_reset = Field.new("tcp.flags.reset")
 
@@ -387,11 +269,108 @@ function iggy.dissector(buffer, pinfo, tree)
     ----------------------------------------
     -- Dissect packet with error handling
     ----------------------------------------
-    local status, result = pcall(function()
+    local HEADER_SIZE = 8
+    local payload_offset = HEADER_SIZE
+    local payload_len = total_len - HEADER_SIZE
+
+    local status, err = pcall(function()
         if is_request then
-            return dissect_request(buffer, pinfo, tree)
+            -- Request dissection
+            local length = buffer(0, 4):le_uint()
+            local command_code = buffer(4, 4):le_uint()
+
+            local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Request")
+            subtree:add(f_message_type, "Request"):set_generated()
+
+            -- Length and command code
+            subtree:add_le(f_req_length, buffer(0, 4))
+            subtree:add_le(f_req_command, buffer(4, 4))
+
+            -- Early return for unknown commands
+            local command_info = COMMANDS[command_code]
+            if not command_info then
+                local unknown_name = string.format("Unknown(0x%x)", command_code)
+                subtree:add(f_req_command_name, unknown_name):set_generated()
+
+                if payload_len > 0 then
+                    subtree:add(f_req_payload, buffer(payload_offset, payload_len))
+                end
+
+                pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", unknown_name, command_code, length))
+                return
+            end
+
+            -- After this point, command_info is guaranteed to exist
+            local command_name = command_info.name
+            subtree:add(f_req_command_name, command_name):set_generated()
+
+            -- Payload
+            if payload_len > 0 then
+                local payload_tree = subtree:add(f_req_payload, buffer(payload_offset, payload_len))
+                command_info.request_payload_dissector(buffer, payload_tree, payload_offset)
+            end
+
+            -- Track request code for request-response matching
+            if tcp_stream then
+                stream_queues.enqueue(tcp_stream.value, command_code)
+            end
+
+            -- Update info column
+            pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
+
         elseif is_response then
-            return dissect_response(buffer, pinfo, tree)
+            -- Response dissection
+            local status_code = buffer(0, 4):le_uint()
+            local length = buffer(4, 4):le_uint()
+
+            local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Response")
+            subtree:add(f_message_type, "Response"):set_generated()
+
+            -- Status code and length
+            subtree:add_le(f_resp_status, buffer(0, 4))
+            subtree:add_le(f_resp_length, buffer(4, 4))
+
+            -- Status name
+            local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
+            subtree:add(f_resp_status_name, status_name):set_generated()
+
+            -- Get matching request code for this TCP stream (FIFO order)
+            local command_code = tcp_stream and stream_queues.dequeue(tcp_stream.value)
+            local command_info = command_code and COMMANDS[command_code]
+
+            -- Early return for unknown commands (no matching request or unimplemented command)
+            if not command_info then
+                local unknown_name = "Unknown"
+                if payload_len > 0 then
+                    subtree:add(f_resp_payload, buffer(payload_offset, payload_len))
+                end
+
+                if status_code == 0 then
+                    pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", unknown_name, length))
+                else
+                    pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
+                        unknown_name, status_name, status_code, length))
+                end
+                return
+            end
+
+            -- After this point, command_info is guaranteed to exist
+            local command_name = command_info.name
+            subtree:add(f_req_command_name, command_name):set_generated()
+
+            -- Payload (only for success responses)
+            if payload_len > 0 and status_code == 0 then
+                local payload_tree = subtree:add(f_resp_payload, buffer(payload_offset, payload_len))
+                command_info.response_payload_dissector(buffer, payload_tree, payload_offset)
+            end
+
+            -- Update info column
+            if status_code == 0 then
+                pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
+            else
+                pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
+                    command_name, status_name, status_code, length))
+            end
         end
     end)
 
@@ -399,12 +378,12 @@ function iggy.dissector(buffer, pinfo, tree)
     if not status then
         local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Dissection Error)")
         subtree:add_proto_expert_info(ef_dissection_error,
-            string.format("Error: %s", result))
+            string.format("Error: %s", err))
         pinfo.cols.info:set("Dissection error")
         return buflen
     end
 
-    return result
+    return total_len
 end
 
 ----------------------------------------
