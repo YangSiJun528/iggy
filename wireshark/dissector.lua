@@ -1,5 +1,21 @@
 -- Iggy Protocol Dissector
 -- Supports Request/Response detection with extensible command registry
+--
+-- Error Handling Convention:
+--   ALL error conditions MUST use ProtoExpert (tree:add_proto_expert_info)
+--   NEVER use plain tree:add() for error/warning conditions
+--   This ensures errors are visible in Wireshark's Expert Info system
+--
+-- Exception Handling Patterns:
+--   1. Helper functions that can fail:
+--      - Return nil on error AND add expert info to tree
+--      - Caller checks return value: if not offset then return end
+--   2. Dissector functions:
+--      - Always use subtree:add_proto_expert_info(ef_*, "description")
+--      - Never silently ignore errors
+--   3. Validation checks:
+--      - Use specific expert info for each error type (malformed, protocol error, etc.)
+--      - Include relevant details in error message (offsets, expected vs actual values)
 
 local iggy = Proto("iggy", "Iggy Protocol")
 
@@ -10,25 +26,31 @@ iggy.prefs.server_port = Pref.uint("Server Port", 8090, "Target TCP server port"
 
 ----------------------------------------
 -- Fields
+-- Naming convention:
+--   f_message_type         - Common fields (applies to both request and response)
+--   f_req_*                - Request common fields (all requests)
+--   f_resp_*               - Response common fields (all responses)
+--   f_<cmdname>_*          - Command-specific fields (e.g., f_login_* for LoginUser command)
+--
+-- Reference: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_ProtoField
+--   ProtoField.some_type(abbr, [name], [base], [valuestring], [mask], [description])
 ----------------------------------------
 -- Common fields
 local f_message_type = ProtoField.string("iggy.message_type", "Message Type")
 
--- Request fields
---  ProtoField.some_type(abbr, [name], [base], [valuestring], [mask], [description])
---  ref: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_ProtoField
+-- Request common fields
 local f_req_length = ProtoField.uint32("iggy.request.length", "Length", base.DEC, nil, nil, "Length of command code + payload")
 local f_req_command = ProtoField.uint32("iggy.request.command", "Command Code", base.DEC)
 local f_req_command_name = ProtoField.string("iggy.request.command_name", "Command Name")
 local f_req_payload = ProtoField.bytes("iggy.request.payload", "Payload")
 
--- Response fields
+-- Response common fields
 local f_resp_status = ProtoField.uint32("iggy.response.status", "Status Code", base.DEC)
 local f_resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name")
 local f_resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload")
 local f_resp_payload = ProtoField.bytes("iggy.response.payload", "Payload")
 
--- LoginUser (38) - Request fields
+-- Command-specific fields: LoginUser (code=38)
 local f_login_username_len = ProtoField.uint8("iggy.login.username_len", "Username Length", base.DEC)
 local f_login_username = ProtoField.string("iggy.login.username", "Username")
 local f_login_password_len = ProtoField.uint8("iggy.login.password_len", "Password Length", base.DEC)
@@ -37,8 +59,6 @@ local f_login_version_len = ProtoField.uint32("iggy.login.version_len", "Version
 local f_login_version = ProtoField.string("iggy.login.version", "Version")
 local f_login_context_len = ProtoField.uint32("iggy.login.context_len", "Context Length", base.DEC)
 local f_login_context = ProtoField.string("iggy.login.context", "Context")
-
--- LoginUser (38) - Response fields
 local f_login_user_id = ProtoField.uint32("iggy.login.user_id", "User ID", base.DEC)
 
 iggy.fields = {
@@ -53,12 +73,24 @@ iggy.fields = {
 
 ----------------------------------------
 -- Expert Info
+-- Naming convention: ef_<category>_<specific>
 ----------------------------------------
-local ef_too_short = ProtoExpert.new("iggy.too_short", "Packet too short", expert.group.MALFORMED, expert.severity.ERROR)
-local ef_invalid_length = ProtoExpert.new("iggy.invalid_length", "Invalid length field", expert.group.MALFORMED, expert.severity.WARN)
-local ef_error_status = ProtoExpert.new("iggy.error_status", "Error response", expert.group.RESPONSE_CODE, expert.severity.WARN)
+-- Malformed packet errors
+local ef_malformed_too_short = ProtoExpert.new("iggy.malformed.too_short", "Packet too short", expert.group.MALFORMED, expert.severity.ERROR)
+local ef_malformed_invalid_length = ProtoExpert.new("iggy.malformed.invalid_length", "Invalid length field", expert.group.MALFORMED, expert.severity.WARN)
+local ef_malformed_incomplete_payload = ProtoExpert.new("iggy.malformed.incomplete_payload", "Incomplete payload", expert.group.MALFORMED, expert.severity.ERROR)
 
-iggy.experts = { ef_too_short, ef_invalid_length, ef_error_status }
+-- Protocol-specific warnings
+local ef_protocol_error_status = ProtoExpert.new("iggy.protocol.error_status", "Error response", expert.group.RESPONSE_CODE, expert.severity.WARN)
+local ef_protocol_unknown_request = ProtoExpert.new("iggy.protocol.unknown_request", "Request not captured or unknown", expert.group.SEQUENCE, expert.severity.NOTE)
+
+iggy.experts = {
+    ef_malformed_too_short,
+    ef_malformed_invalid_length,
+    ef_malformed_incomplete_payload,
+    ef_protocol_error_status,
+    ef_protocol_unknown_request,
+}
 
 ----------------------------------------
 -- Helper functions
@@ -81,10 +113,12 @@ local function read_u32_le(buffer, offset)
 end
 
 -- Dissect string with u8 length prefix
--- Returns new offset or nil on error
+-- Returns new offset or nil on error (with expert info added to tree)
 local function dissect_string_u8_len(buffer, tree, offset, len_field, str_field)
     local buflen = buffer:len()
     if offset + 1 > buflen then
+        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
+            string.format("Cannot read string length at offset %d", offset))
         return nil
     end
 
@@ -92,6 +126,8 @@ local function dissect_string_u8_len(buffer, tree, offset, len_field, str_field)
     tree:add(len_field, buffer(offset, 1))
 
     if offset + 1 + str_len > buflen then
+        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
+            string.format("String data incomplete: expected %d bytes at offset %d", str_len, offset + 1))
         return nil
     end
 
@@ -103,10 +139,12 @@ local function dissect_string_u8_len(buffer, tree, offset, len_field, str_field)
 end
 
 -- Dissect string with u32 length prefix (little-endian)
--- Returns new offset or nil on error
+-- Returns new offset or nil on error (with expert info added to tree)
 local function dissect_string_u32_le_len(buffer, tree, offset, len_field, str_field)
     local buflen = buffer:len()
     if offset + 4 > buflen then
+        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
+            string.format("Cannot read string length at offset %d", offset))
         return nil
     end
 
@@ -114,6 +152,8 @@ local function dissect_string_u32_le_len(buffer, tree, offset, len_field, str_fi
     tree:add_le(len_field, buffer(offset, 4))
 
     if offset + 4 + str_len > buflen then
+        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
+            string.format("String data incomplete: expected %d bytes at offset %d", str_len, offset + 4))
         return nil
     end
 
@@ -204,7 +244,8 @@ local COMMANDS = {
 
             -- Need 4 bytes for user_id
             if offset + 4 > buflen then
-                tree:add("Incomplete LoginUser response: expected 4 bytes for user_id"):set_generated()
+                tree:add_proto_expert_info(ef_malformed_incomplete_payload,
+                    "LoginUser response: expected 4 bytes for user_id")
                 return
             end
 
@@ -353,7 +394,7 @@ local function dissect_request(buffer, pinfo, tree)
     -- Validate length
     local expected_length = 4 + payload_len
     if length ~= expected_length then
-        subtree:add_proto_expert_info(ef_invalid_length,
+        subtree:add_proto_expert_info(ef_malformed_invalid_length,
             string.format("Length mismatch: field=%d, expected=%d", length, expected_length))
     end
 
@@ -412,15 +453,18 @@ local function dissect_response(buffer, pinfo, tree)
                 -- Call response payload dissector with full buffer and offset pointing to payload start
                 command_info.response_payload_dissector(buffer, payload_tree, 8)
             else
-                -- Error response - payload might contain error message
-                payload_tree:add("Error response (no payload dissector for error responses)"):set_generated()
+                -- Error response with payload (protocol violation will be flagged below)
+                -- Payload might contain error message, but we don't parse it
             end
         else
-            payload_tree:add("Request not captured or unknown - cannot dissect payload"):set_generated()
+            -- Request not captured or unknown - cannot match response to request
+            payload_tree:add_proto_expert_info(ef_protocol_unknown_request,
+                "Cannot dissect payload: request not captured or unknown command")
         end
     elseif not command_info then
         -- No payload and unknown request
-        subtree:add("Request not captured or unknown"):set_generated()
+        subtree:add_proto_expert_info(ef_protocol_unknown_request,
+            "Request not captured or unknown command")
     end
 
     -- Update info column
@@ -430,12 +474,12 @@ local function dissect_response(buffer, pinfo, tree)
     else
         pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
             command_name_str, status_name, status, length))
-        subtree:add_proto_expert_info(ef_error_status, string.format("Error status: %d", status))
+        subtree:add_proto_expert_info(ef_protocol_error_status, string.format("Error status: %d", status))
     end
 
     -- Validate: error responses should have length=0
     if status ~= 0 and length ~= 0 then
-        subtree:add_proto_expert_info(ef_invalid_length, "Error response should have length=0")
+        subtree:add_proto_expert_info(ef_malformed_invalid_length, "Error response should have length=0")
     end
 
     return total_len
@@ -492,7 +536,7 @@ function iggy.dissector(buffer, pinfo, tree)
         else
             -- Port indicates request, but format doesn't match
             local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
-            subtree:add_proto_expert_info(ef_invalid_length,
+            subtree:add_proto_expert_info(ef_malformed_invalid_length,
                 string.format("Expected request format (dst_port=%d), but format validation failed", server_port))
             pinfo.cols.info:set("Malformed request")
             return 0
@@ -520,7 +564,7 @@ function iggy.dissector(buffer, pinfo, tree)
         else
             -- Port indicates response, but format doesn't match
             local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
-            subtree:add_proto_expert_info(ef_invalid_length,
+            subtree:add_proto_expert_info(ef_malformed_invalid_length,
                 string.format("Expected response format (src_port=%d), but format validation failed", server_port))
             pinfo.cols.info:set("Malformed response")
             return 0
@@ -530,7 +574,7 @@ function iggy.dissector(buffer, pinfo, tree)
         -- Neither request nor response port - shouldn't happen with port-based registration
         if buflen < 8 then
             local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
-            subtree:add_proto_expert_info(ef_too_short)
+            subtree:add_proto_expert_info(ef_malformed_too_short)
             pinfo.cols.info:set("Malformed packet (too short)")
             return 0
         end
