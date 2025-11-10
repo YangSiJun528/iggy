@@ -280,75 +280,6 @@ local STATUS_CODES = {
     -- Add more status codes as needed
 }
 
-----------------------------------------
--- Helper: Validate request format
--- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
--- where LENGTH = CODE(4) + PAYLOAD(N)
--- Total packet size = 4 + LENGTH
-----------------------------------------
-local function is_valid_request(buffer)
-    local buflen = buffer:len()
-
-    -- Need minimum 8 bytes for header (LENGTH + CODE)
-    if buflen < 8 then
-        return false
-    end
-
-    local length_field = buffer(0, 4):le_uint()
-    local command_code = buffer(4, 4):le_uint()
-
-    -- Must be a known command
-    if not COMMANDS[command_code] then
-        return false
-    end
-
-    -- Length field must be at least 4 for command code
-    if length_field < 4 then
-        return false
-    end
-
-    -- Packet size must match LENGTH field
-    local expected_total_size = 4 + length_field
-    if expected_total_size ~= buflen then
-        return false
-    end
-
-    -- Sanity check: command code should be in reasonable range
-    if command_code <= 0 or command_code >= 1000 then
-        return false
-    end
-
-    return true
-end
-
-----------------------------------------
--- Helper: Validate response format
--- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
--- Total packet size = 8 + LENGTH
-----------------------------------------
-local function is_valid_response(buffer)
-    local buflen = buffer:len()
-
-    -- Need minimum 8 bytes for header (STATUS + LENGTH)
-    if buflen < 8 then
-        return false
-    end
-
-    local status_code = buffer(0, 4):le_uint()
-    local length_field = buffer(4, 4):le_uint()
-
-    -- Error response: STATUS != 0, LENGTH = 0, no payload
-    if status_code ~= 0 then
-        local is_valid_error = length_field == 0
-                               and buflen == 8
-                               and 0 < status_code and status_code < 100000
-        return is_valid_error
-    end
-
-    -- Success response: STATUS = 0, payload size matches LENGTH field
-    local expected_total_size = 8 + length_field
-    return expected_total_size == buflen
-end
 
 ----------------------------------------
 -- Request dissector
@@ -530,21 +461,25 @@ function iggy.dissector(buffer, pinfo, tree)
 
     -- TCP Desegmentation: Step 2 - Calculate required length based on direction
     if is_request then
-        -- Assume this is a request, validate format
-        if is_valid_request(buffer) then
-            -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
-            -- Total size = 4 + LENGTH
-            local length = buffer(0, 4):le_uint()
-            local total_len = 4 + length
+        -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
+        -- Validate and parse request
+        if buflen < 8 then
+            pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+            return
+        end
 
-            if buflen < total_len then
-                pinfo.desegment_len = total_len - buflen
-                return
-            end
+        local length_field = buffer(0, 4):le_uint()
+        local command_code = buffer(4, 4):le_uint()
+        local total_len = 4 + length_field
 
-            return dissect_request(buffer, pinfo, tree)
-        else
-            -- Port indicates request, but format doesn't match
+        -- Validate request format
+        local is_known_command = COMMANDS[command_code] ~= nil
+        local is_valid_length = length_field >= 4
+        local is_matching_size = total_len == buflen
+        local is_reasonable_code = command_code > 0 and command_code < 1000
+
+        if not (is_known_command and is_valid_length and is_matching_size and is_reasonable_code) then
+            -- Invalid request format
             local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
             subtree:add_proto_expert_info(ef_malformed_invalid_length,
                 string.format("Expected request format (dst_port=%d), but format validation failed", server_port))
@@ -552,33 +487,54 @@ function iggy.dissector(buffer, pinfo, tree)
             return 0
         end
 
+        -- Check if we have full packet
+        if buflen < total_len then
+            pinfo.desegment_len = total_len - buflen
+            return
+        end
+
+        return dissect_request(buffer, pinfo, tree)
+
     elseif is_response then
-        -- Assume this is a response, validate format
-        if is_valid_response(buffer) then
-            -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
-            -- Need at least 8 bytes to read header
-            if buflen < 8 then
-                pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
-                return
-            end
+        -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
+        -- Validate and parse response
+        if buflen < 8 then
+            pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+            return
+        end
 
-            local payload_len = buffer(4, 4):le_uint()
-            local total_len = 8 + payload_len
+        local status_code = buffer(0, 4):le_uint()
+        local length_field = buffer(4, 4):le_uint()
+        local total_len = 8 + length_field
 
-            if buflen < total_len then
-                pinfo.desegment_len = total_len - buflen
-                return
-            end
-
-            return dissect_response(buffer, pinfo, tree)
+        -- Validate response format
+        local is_valid = false
+        if status_code ~= 0 then
+            -- Error response: STATUS != 0, LENGTH = 0, no payload
+            is_valid = length_field == 0
+                       and buflen == 8
+                       and status_code > 0 and status_code < 100000
         else
-            -- Port indicates response, but format doesn't match
+            -- Success response: STATUS = 0, payload size matches
+            is_valid = total_len == buflen
+        end
+
+        if not is_valid then
+            -- Invalid response format
             local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
             subtree:add_proto_expert_info(ef_malformed_invalid_length,
                 string.format("Expected response format (src_port=%d), but format validation failed", server_port))
             pinfo.cols.info:set("Malformed response")
             return 0
         end
+
+        -- Check if we have full packet
+        if buflen < total_len then
+            pinfo.desegment_len = total_len - buflen
+            return
+        end
+
+        return dissect_response(buffer, pinfo, tree)
 
     else
         -- Neither request nor response port - shouldn't happen with port-based registration
