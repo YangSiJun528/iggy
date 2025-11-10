@@ -71,16 +71,6 @@ iggy.fields = {
 
 ----------------------------------------
 -- Command Registry
--- Each command MUST have:
---   - name: Command name (non-empty string)
---   - request_payload_dissector: function(buffer, tree, offset) - NEVER nil, use empty function if no payload
---   - response_payload_dissector: function(buffer, tree, offset) - NEVER nil, use empty function if no payload
---
--- Why dissectors can't be nil:
---   If COMMANDS[code] exists but dissector is nil, we can't tell if:
---     1. The command has no payload (expected), or
---     2. Someone forgot to implement the dissector (bug)
---   Always use explicit empty function for no-payload commands.
 ----------------------------------------
 local COMMANDS = {
     [1] = {
@@ -136,14 +126,15 @@ local COMMANDS = {
 }
 
 -- Validate all registered commands
+local dissector_err = "must be function, not nil (nil is ambiguous: no payload or unimplemented)"
 for code, cmd in pairs(COMMANDS) do
     assert(type(code) == "number", "Command code must be a number")
     assert(type(cmd.name) == "string" and cmd.name:match("%S"),
-        string.format("Command %d: name must be a non-empty string (not just whitespace)", code))
+        string.format("Command %d: name must be non-empty string", code))
     assert(type(cmd.request_payload_dissector) == "function",
-        string.format("Command %d (%s): request_payload_dissector must be a function (use empty function if no payload)", code, cmd.name))
+        string.format("Command %d (%s): request_payload_dissector %s", code, cmd.name, dissector_err))
     assert(type(cmd.response_payload_dissector) == "function",
-        string.format("Command %d (%s): response_payload_dissector must be a function (use empty function if no payload)", code, cmd.name))
+        string.format("Command %d (%s): response_payload_dissector %s", code, cmd.name, dissector_err))
 end
 
 ----------------------------------------
