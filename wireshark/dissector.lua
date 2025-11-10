@@ -124,9 +124,26 @@ end
 
 ----------------------------------------
 -- TCP stream tracking for request-response matching
+-- Each TCP stream has a FIFO queue of request command codes
 ----------------------------------------
-local stream_requests = {}
+local stream_request_queues = {}
 local tcp_stream_field = Field.new("tcp.stream")
+
+-- Helper: Enqueue a request code for a TCP stream
+local function enqueue_request(stream_id, command_code)
+    if not stream_request_queues[stream_id] then
+        stream_request_queues[stream_id] = {}
+    end
+    table.insert(stream_request_queues[stream_id], command_code)
+end
+
+-- Helper: Dequeue a request code for a TCP stream
+local function dequeue_request(stream_id)
+    if not stream_request_queues[stream_id] or #stream_request_queues[stream_id] == 0 then
+        return nil
+    end
+    return table.remove(stream_request_queues[stream_id], 1)
+end
 
 ----------------------------------------
 -- Command Registry
@@ -296,7 +313,7 @@ local function dissect_request(buffer, pinfo, tree)
     -- Track request code for request-response matching
     local tcp_stream = tcp_stream_field()
     if tcp_stream then
-        stream_requests[tcp_stream.value] = command_code
+        enqueue_request(tcp_stream.value, command_code)
     end
 
     -- Update info column
@@ -343,9 +360,9 @@ local function dissect_response(buffer, pinfo, tree)
     -- Length field
     subtree:add_le(f_resp_length, buffer(4, 4))
 
-    -- Get last request code for this TCP stream
+    -- Get matching request code for this TCP stream (FIFO order)
     local tcp_stream = tcp_stream_field()
-    local command_code = tcp_stream and stream_requests[tcp_stream.value]
+    local command_code = tcp_stream and dequeue_request(tcp_stream.value)
     local command_info = command_code and COMMANDS[command_code]
 
     -- Add command name to response if we know which request this is responding to
