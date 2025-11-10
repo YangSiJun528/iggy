@@ -79,23 +79,12 @@ iggy.fields = {
 
 ----------------------------------------
 -- Expert Info
--- Naming convention: ef_<category>_<specific>
 ----------------------------------------
--- Malformed packet errors
-local ef_malformed_too_short = ProtoExpert.new("iggy.malformed.too_short", "Packet too short", expert.group.MALFORMED, expert.severity.ERROR)
-local ef_malformed_invalid_length = ProtoExpert.new("iggy.malformed.invalid_length", "Invalid length field", expert.group.MALFORMED, expert.severity.WARN)
-local ef_malformed_incomplete_payload = ProtoExpert.new("iggy.malformed.incomplete_payload", "Incomplete payload", expert.group.MALFORMED, expert.severity.ERROR)
-
--- Protocol-specific warnings
-local ef_protocol_error_status = ProtoExpert.new("iggy.protocol.error_status", "Error response", expert.group.RESPONSE_CODE, expert.severity.WARN)
-local ef_protocol_unknown_request = ProtoExpert.new("iggy.protocol.unknown_request", "Request not captured or unknown", expert.group.SEQUENCE, expert.severity.NOTE)
+-- Used only for dissection errors caught by pcall
+local ef_dissection_error = ProtoExpert.new("iggy.dissection_error", "Dissection error", expert.group.MALFORMED, expert.severity.ERROR)
 
 iggy.experts = {
-    ef_malformed_too_short,
-    ef_malformed_invalid_length,
-    ef_malformed_incomplete_payload,
-    ef_protocol_error_status,
-    ef_protocol_unknown_request,
+    ef_dissection_error,
 }
 
 ----------------------------------------
@@ -289,29 +278,20 @@ local function dissect_response(buffer, pinfo, tree)
         subtree:add(f_req_command_name, command_info.name):set_generated()
     end
 
-    -- Payload (only for success responses)
+    -- Payload (only for success responses with known command)
     local payload_len = total_len - 8
-    if payload_len > 0 then
+    if payload_len > 0 and command_info and status == 0 then
         local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
-        if command_info and status == 0 then
-            command_info.response_payload_dissector(buffer, payload_tree, 8)
-        elseif not command_info then
-            payload_tree:add_proto_expert_info(ef_protocol_unknown_request,
-                "Cannot dissect payload: request not captured or unknown command")
-        end
-    elseif not command_info then
-        subtree:add_proto_expert_info(ef_protocol_unknown_request,
-            "Request not captured or unknown command")
+        command_info.response_payload_dissector(buffer, payload_tree, 8)
     end
 
     -- Update info column
-    local command_name_str = command_info and command_info.name or "Unknown"
+    local command_name_str = command_info and command_info.name or "Unknown(or Not yet impl)"
     if status == 0 then
         pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name_str, length))
     else
         pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
             command_name_str, status_name, status, length))
-        subtree:add_proto_expert_info(ef_protocol_error_status, string.format("Error status: %d", status))
     end
 
     return total_len
@@ -383,7 +363,7 @@ function iggy.dissector(buffer, pinfo, tree)
     -- Handle dissection errors
     if not status then
         local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Dissection Error)")
-        subtree:add_proto_expert_info(ef_malformed_too_short,
+        subtree:add_proto_expert_info(ef_dissection_error,
             string.format("Error: %s", result))
         pinfo.cols.info:set("Dissection error")
         return buflen
