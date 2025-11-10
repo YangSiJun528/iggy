@@ -263,8 +263,9 @@ local COMMANDS = {
 -- Validate all registered commands
 for code, cmd in pairs(COMMANDS) do
     assert(type(code) == "number", "Command code must be a number")
-    assert(type(cmd.name) == "string" and cmd.name ~= "",
-        string.format("Command %d: name must be a non-empty string", code))
+    -- Name must be a string with at least one non-whitespace character
+    assert(type(cmd.name) == "string" and cmd.name:match("%S"),
+        string.format("Command %d: name must be a non-empty string (not just whitespace)", code))
     assert(type(cmd.request_payload_dissector) == "function",
         string.format("Command %d (%s): request_payload_dissector must be a function (use empty function if no payload)", code, cmd.name))
     assert(type(cmd.response_payload_dissector) == "function",
