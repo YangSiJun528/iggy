@@ -556,3 +556,25 @@ function iggy.init()
         tcp_port:add(current_port, iggy)
     end
 end
+
+----------------------------------------
+-- Preferences changed callback
+-- Called when user changes preferences in Wireshark UI
+----------------------------------------
+function iggy.prefs_changed()
+    local tcp_port = DissectorTable.get("tcp.port")
+
+    -- Check if port has changed
+    if current_port ~= iggy.prefs.server_port then
+        -- Remove old port registration
+        if current_port > 0 then
+            tcp_port:remove(current_port, iggy)
+        end
+
+        -- Register new port
+        current_port = iggy.prefs.server_port
+        if current_port > 0 then
+            tcp_port:add(current_port, iggy)
+        end
+    end
+end
