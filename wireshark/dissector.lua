@@ -17,6 +17,7 @@
 --      - Use specific expert info for each error type (malformed, protocol error, etc.)
 --      - Include relevant details in error message (offsets, expected vs actual values)
 
+-- ref: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_Proto
 local iggy = Proto("iggy", "Iggy Protocol")
 
 ----------------------------------------
