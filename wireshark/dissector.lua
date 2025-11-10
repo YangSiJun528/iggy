@@ -139,10 +139,18 @@ end
 
 -- Helper: Dequeue a request code for a TCP stream
 local function dequeue_request(stream_id)
-    if not stream_request_queues[stream_id] or #stream_request_queues[stream_id] == 0 then
+    local queue = stream_request_queues[stream_id]
+    if not queue or #queue == 0 then
         return nil
     end
-    return table.remove(stream_request_queues[stream_id], 1)
+    local command_code = table.remove(queue, 1)
+
+    -- Clean up empty queue to prevent memory accumulation
+    if #queue == 0 then
+        stream_request_queues[stream_id] = nil
+    end
+
+    return command_code
 end
 
 ----------------------------------------
@@ -416,6 +424,19 @@ end
 function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
 
+    -- Check for TCP connection termination and clean up queue
+    local tcp_stream = tcp_stream_field()
+    local tcp_flags_fin = Field.new("tcp.flags.fin")
+    local tcp_flags_reset = Field.new("tcp.flags.reset")
+
+    local fin = tcp_flags_fin()
+    local rst = tcp_flags_reset()
+
+    if tcp_stream and (fin or rst) then
+        -- Clean up queue when connection closes (FIN or RST)
+        stream_request_queues[tcp_stream.value] = nil
+    end
+
     local buflen = buffer:len()
 
     -- TCP Desegmentation: Step 1 - Check minimum header size
@@ -504,6 +525,9 @@ end
 local current_port = 0
 
 function iggy.init()
+    -- Clear request queues to prevent memory accumulation
+    stream_request_queues = {}
+
     local tcp_port = DissectorTable.get("tcp.port")
 
     -- Remove old port registration if exists
