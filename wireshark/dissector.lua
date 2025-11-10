@@ -99,78 +99,6 @@ iggy.experts = {
 }
 
 ----------------------------------------
--- Helper functions
-----------------------------------------
-
--- Read u8
-local function read_u8(buffer, offset)
-    if offset + 1 > buffer:len() then
-        return nil
-    end
-    return buffer(offset, 1):uint()
-end
-
--- Read u32 (little-endian)
-local function read_u32_le(buffer, offset)
-    if offset + 4 > buffer:len() then
-        return nil
-    end
-    return buffer(offset, 4):le_uint()
-end
-
--- Dissect string with u8 length prefix
--- Returns new offset or nil on error (with expert info added to tree)
-local function dissect_string_u8_len(buffer, tree, offset, len_field, str_field)
-    local buflen = buffer:len()
-    if offset + 1 > buflen then
-        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
-            string.format("Cannot read string length at offset %d", offset))
-        return nil
-    end
-
-    local str_len = buffer(offset, 1):uint()
-    tree:add(len_field, buffer(offset, 1))
-
-    if offset + 1 + str_len > buflen then
-        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
-            string.format("String data incomplete: expected %d bytes at offset %d", str_len, offset + 1))
-        return nil
-    end
-
-    if str_len > 0 then
-        tree:add(str_field, buffer(offset + 1, str_len))
-    end
-
-    return offset + 1 + str_len
-end
-
--- Dissect string with u32 length prefix (little-endian)
--- Returns new offset or nil on error (with expert info added to tree)
-local function dissect_string_u32_le_len(buffer, tree, offset, len_field, str_field)
-    local buflen = buffer:len()
-    if offset + 4 > buflen then
-        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
-            string.format("Cannot read string length at offset %d", offset))
-        return nil
-    end
-
-    local str_len = buffer(offset, 4):le_uint()
-    tree:add_le(len_field, buffer(offset, 4))
-
-    if offset + 4 + str_len > buflen then
-        tree:add_proto_expert_info(ef_malformed_incomplete_payload,
-            string.format("String data incomplete: expected %d bytes at offset %d", str_len, offset + 4))
-        return nil
-    end
-
-    if str_len > 0 then
-        tree:add(str_field, buffer(offset + 4, str_len))
-    end
-
-    return offset + 4 + str_len
-end
-
-----------------------------------------
 -- TCP stream tracking for request-response matching
 -- Each TCP stream has a FIFO queue of request command codes
 ----------------------------------------
@@ -228,34 +156,42 @@ local COMMANDS = {
         name = "LoginUser",
         request_payload_dissector = function(buffer, tree, offset)
             -- Username (u8 length + string)
-            offset = dissect_string_u8_len(buffer, tree, offset, f_login_req_username_len, f_login_req_username)
-            if not offset then return end
+            local username_len = buffer(offset, 1):uint()
+            tree:add(f_login_req_username_len, buffer(offset, 1))
+            offset = offset + 1
+            if username_len > 0 then
+                tree:add(f_login_req_username, buffer(offset, username_len))
+                offset = offset + username_len
+            end
 
             -- Password (u8 length + string)
-            offset = dissect_string_u8_len(buffer, tree, offset, f_login_req_password_len, f_login_req_password)
-            if not offset then return end
+            local password_len = buffer(offset, 1):uint()
+            tree:add(f_login_req_password_len, buffer(offset, 1))
+            offset = offset + 1
+            if password_len > 0 then
+                tree:add(f_login_req_password, buffer(offset, password_len))
+                offset = offset + password_len
+            end
 
             -- Version (u32 length + string, optional)
-            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_req_version_len, f_login_req_version)
-            if not offset then return end
+            local version_len = buffer(offset, 4):le_uint()
+            tree:add_le(f_login_req_version_len, buffer(offset, 4))
+            offset = offset + 4
+            if version_len > 0 then
+                tree:add(f_login_req_version, buffer(offset, version_len))
+                offset = offset + version_len
+            end
 
             -- Context (u32 length + string, optional)
-            offset = dissect_string_u32_le_len(buffer, tree, offset, f_login_req_context_len, f_login_req_context)
-            if not offset then return end
+            local context_len = buffer(offset, 4):le_uint()
+            tree:add_le(f_login_req_context_len, buffer(offset, 4))
+            offset = offset + 4
+            if context_len > 0 then
+                tree:add(f_login_req_context, buffer(offset, context_len))
+            end
         end,
         response_payload_dissector = function(buffer, tree, offset)
             -- LoginUser response payload: user_id (u32, little-endian)
-            -- Reference: core/binary_protocol/src/utils/mapper.rs:455-465
-            local buflen = buffer:len()
-
-            -- Need 4 bytes for user_id
-            if offset + 4 > buflen then
-                tree:add_proto_expert_info(ef_malformed_incomplete_payload,
-                    "LoginUser response: expected 4 bytes for user_id")
-                return
-            end
-
-            -- Parse user_id (u32, little-endian)
             tree:add_le(f_login_resp_user_id, buffer(offset, 4))
         end,
     },
@@ -287,27 +223,15 @@ local STATUS_CODES = {
 -- Request dissector
 ----------------------------------------
 local function dissect_request(buffer, pinfo, tree)
-    local buflen = buffer:len()
-
-    if buflen < 8 then
-        return 0
-    end
-
     local length = buffer(0, 4):le_uint()
     local total_len = 4 + length
-
-    if buflen < total_len then
-        return 0
-    end
+    local command_code = buffer(4, 4):le_uint()
 
     local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Request")
     subtree:add(f_message_type, "Request"):set_generated()
 
-    -- Length field
+    -- Length and command code
     subtree:add_le(f_req_length, buffer(0, 4))
-
-    -- Command code
-    local command_code = buffer(4, 4):le_uint()
     subtree:add_le(f_req_command, buffer(4, 4))
 
     -- Command name
@@ -319,8 +243,6 @@ local function dissect_request(buffer, pinfo, tree)
     local payload_len = total_len - 8
     if payload_len > 0 then
         local payload_tree = subtree:add(f_req_payload, buffer(8, payload_len))
-
-        -- Use command-specific request payload dissector
         if command_info then
             command_info.request_payload_dissector(buffer, payload_tree, 8)
         end
@@ -335,13 +257,6 @@ local function dissect_request(buffer, pinfo, tree)
     -- Update info column
     pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
 
-    -- Validate length
-    local expected_length = 4 + payload_len
-    if length ~= expected_length then
-        subtree:add_proto_expert_info(ef_malformed_invalid_length,
-            string.format("Length mismatch: field=%d, expected=%d", length, expected_length))
-    end
-
     return total_len
 end
 
@@ -349,32 +264,20 @@ end
 -- Response dissector
 ----------------------------------------
 local function dissect_response(buffer, pinfo, tree)
-    local buflen = buffer:len()
-
-    if buflen < 8 then
-        return 0
-    end
-
     local status = buffer(0, 4):le_uint()
     local length = buffer(4, 4):le_uint()
     local total_len = 8 + length
 
-    if buflen < total_len then
-        return 0
-    end
-
     local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Response")
     subtree:add(f_message_type, "Response"):set_generated()
 
-    -- Status code
+    -- Status code and length
     subtree:add_le(f_resp_status, buffer(0, 4))
+    subtree:add_le(f_resp_length, buffer(4, 4))
 
     -- Status name
     local status_name = STATUS_CODES[status] or (status == 0 and "OK" or string.format("Error(%d)", status))
     subtree:add(f_resp_status_name, status_name):set_generated()
-
-    -- Length field
-    subtree:add_le(f_resp_length, buffer(4, 4))
 
     -- Get matching request code for this TCP stream (FIFO order)
     local tcp_stream = tcp_stream_field()
@@ -386,26 +289,17 @@ local function dissect_response(buffer, pinfo, tree)
         subtree:add(f_req_command_name, command_info.name):set_generated()
     end
 
-    -- Payload
+    -- Payload (only for success responses)
     local payload_len = total_len - 8
     if payload_len > 0 then
         local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
-
-        if command_info then
-            -- Use command-specific response payload dissector (only for success responses)
-            if status == 0 then
-                -- Call response payload dissector with full buffer and offset pointing to payload start
-                command_info.response_payload_dissector(buffer, payload_tree, 8)
-            else
-                -- Error response has no payload
-            end
-        else
-            -- Request not captured or unknown - cannot match response to request
+        if command_info and status == 0 then
+            command_info.response_payload_dissector(buffer, payload_tree, 8)
+        elseif not command_info then
             payload_tree:add_proto_expert_info(ef_protocol_unknown_request,
                 "Cannot dissect payload: request not captured or unknown command")
         end
     elseif not command_info then
-        -- No payload and unknown request
         subtree:add_proto_expert_info(ef_protocol_unknown_request,
             "Request not captured or unknown command")
     end
@@ -418,11 +312,6 @@ local function dissect_response(buffer, pinfo, tree)
         pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
             command_name_str, status_name, status, length))
         subtree:add_proto_expert_info(ef_protocol_error_status, string.format("Error status: %d", status))
-    end
-
-    -- Validate: error responses should have length=0
-    if status ~= 0 and length ~= 0 then
-        subtree:add_proto_expert_info(ef_malformed_invalid_length, "Error response should have length=0")
     end
 
     return total_len
@@ -463,18 +352,14 @@ function iggy.dissector(buffer, pinfo, tree)
     end
 
     -- Step 2: Parse header and calculate total packet size
-    -- Store parsed values to avoid re-parsing and variable shadowing
-    local length_field, command_code, status_code, total_len
-
+    local total_len
     if is_request then
         -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
-        length_field = buffer(0, 4):le_uint()
-        command_code = buffer(4, 4):le_uint()
+        local length_field = buffer(0, 4):le_uint()
         total_len = 4 + length_field
     elseif is_response then
         -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
-        status_code = buffer(0, 4):le_uint()
-        length_field = buffer(4, 4):le_uint()
+        local length_field = buffer(4, 4):le_uint()
         total_len = 8 + length_field
     end
 
@@ -484,54 +369,27 @@ function iggy.dissector(buffer, pinfo, tree)
         return
     end
 
-    -- Full packet available, proceed to validation and dissection
-
     ----------------------------------------
-    -- Packet validation and dissection
-    -- At this point, we have a complete packet and parsed header fields
-    -- Note: Either is_request or is_response is always true (due to port-based registration)
+    -- Dissect packet with error handling
     ----------------------------------------
-
-    if is_request then
-        -- Validate request (reuse parsed values: length_field, command_code, total_len)
-        local is_known_command = COMMANDS[command_code] ~= nil
-        local is_valid_length = length_field >= 4
-        local is_matching_size = total_len == buflen
-        local is_reasonable_code = command_code > 0 and command_code < 1000
-
-        if not (is_known_command and is_valid_length and is_matching_size and is_reasonable_code) then
-            local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
-            subtree:add_proto_expert_info(ef_malformed_invalid_length,
-                string.format("Invalid request format (dst_port=%d)", server_port))
-            pinfo.cols.info:set("Malformed request")
-            return buflen
+    local status, result = pcall(function()
+        if is_request then
+            return dissect_request(buffer, pinfo, tree)
+        elseif is_response then
+            return dissect_response(buffer, pinfo, tree)
         end
+    end)
 
-        return dissect_request(buffer, pinfo, tree)
-
-    elseif is_response then
-        -- Validate response (reuse parsed values: status_code, length_field, total_len)
-        local is_valid = false
-        if status_code ~= 0 then
-            -- Error response: STATUS != 0, LENGTH = 0, no payload
-            is_valid = length_field == 0
-                       and buflen == 8
-                       and status_code > 0 and status_code < 100000
-        else
-            -- Success response: STATUS = 0, payload size matches
-            is_valid = total_len == buflen
-        end
-
-        if not is_valid then
-            local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Malformed)")
-            subtree:add_proto_expert_info(ef_malformed_invalid_length,
-                string.format("Invalid response format (src_port=%d)", server_port))
-            pinfo.cols.info:set("Malformed response")
-            return buflen
-        end
-
-        return dissect_response(buffer, pinfo, tree)
+    -- Handle dissection errors
+    if not status then
+        local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Dissection Error)")
+        subtree:add_proto_expert_info(ef_malformed_too_short,
+            string.format("Error: %s", result))
+        pinfo.cols.info:set("Dissection error")
+        return buflen
     end
+
+    return result
 end
 
 ----------------------------------------
