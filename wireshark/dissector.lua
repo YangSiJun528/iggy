@@ -1,22 +1,4 @@
 -- Iggy Protocol Dissector
--- Supports Request/Response detection with extensible command registry
---
--- Error Handling Convention:
---   ALL error conditions MUST use ProtoExpert (tree:add_proto_expert_info)
---   NEVER use plain tree:add() for error/warning conditions
---   This ensures errors are visible in Wireshark's Expert Info system
---
--- Exception Handling Patterns:
---   1. Helper functions that can fail:
---      - Return nil on error AND add expert info to tree
---      - Caller checks return value: if not offset then return end
---   2. Dissector functions:
---      - Always use subtree:add_proto_expert_info(ef_*, "description")
---      - Never silently ignore errors
---   3. Validation checks:
---      - Use specific expert info for each error type (malformed, protocol error, etc.)
---      - Include relevant details in error message (offsets, expected vs actual values)
-
 -- ref: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_Proto
 local iggy = Proto("iggy", "Iggy Protocol")
 
@@ -386,48 +368,29 @@ function iggy.dissector(buffer, pinfo, tree)
 end
 
 ----------------------------------------
--- Lifecycle callbacks (init, prefs_changed)
-----------------------------------------
-local current_port = 0
-
-function iggy.init()
-    -- Clear request queues to prevent memory accumulation
-    stream_queues.clear_all()
-
-    local tcp_port = DissectorTable.get("tcp.port")
-
-    -- Remove old port registration if exists
-    if current_port > 0 then
-        tcp_port:remove(current_port, iggy)
-    end
-
-    -- Register new port
-    current_port = iggy.prefs.server_port
-    if current_port > 0 then
-        tcp_port:add(current_port, iggy)
-    end
-end
-
+-- Preferences changed callback
 -- Called when user changes preferences in Wireshark UI
+----------------------------------------
+local current_port = iggy.prefs.server_port
+
 function iggy.prefs_changed()
     local tcp_port = DissectorTable.get("tcp.port")
 
-    -- Check if port has changed
     if current_port ~= iggy.prefs.server_port then
-        -- Clear request queues when switching to different port
-        -- The queues contain request-response matching data for the old port,
-        -- which is no longer relevant for the new port
         stream_queues.clear_all()
 
-        -- Remove old port registration
         if current_port > 0 then
             tcp_port:remove(current_port, iggy)
         end
 
-        -- Register new port
         current_port = iggy.prefs.server_port
         if current_port > 0 then
             tcp_port:add(current_port, iggy)
         end
     end
 end
+
+----------------------------------------
+-- Register protocol to default port
+----------------------------------------
+DissectorTable.get("tcp.port"):add(iggy.prefs.server_port, iggy)
