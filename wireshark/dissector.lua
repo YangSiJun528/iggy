@@ -566,6 +566,11 @@ function iggy.prefs_changed()
 
     -- Check if port has changed
     if current_port ~= iggy.prefs.server_port then
+        -- Clear request queues when switching to different port
+        -- The queues contain request-response matching data for the old port,
+        -- which is no longer relevant for the new port
+        stream_request_queues = {}
+
         -- Remove old port registration
         if current_port > 0 then
             tcp_port:remove(current_port, iggy)
