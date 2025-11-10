@@ -26,6 +26,16 @@ local iggy = Proto("iggy", "Iggy Protocol")
 iggy.prefs.server_port = Pref.uint("Server Port", 8090, "Target TCP server port")
 
 ----------------------------------------
+-- Expert Info
+----------------------------------------
+-- Used only for dissection errors caught by pcall
+local ef_dissection_error = ProtoExpert.new("iggy.dissection_error", "Dissection error", expert.group.MALFORMED, expert.severity.ERROR)
+
+iggy.experts = {
+    ef_dissection_error,
+}
+
+----------------------------------------
 -- Fields
 -- Naming convention:
 --   f_message_type         - Common fields (applies to both request and response)
@@ -76,56 +86,6 @@ iggy.fields = {
     -- LoginUser response fields
     f_login_resp_user_id,
 }
-
-----------------------------------------
--- Expert Info
-----------------------------------------
--- Used only for dissection errors caught by pcall
-local ef_dissection_error = ProtoExpert.new("iggy.dissection_error", "Dissection error", expert.group.MALFORMED, expert.severity.ERROR)
-
-iggy.experts = {
-    ef_dissection_error,
-}
-
-----------------------------------------
--- TCP stream tracking for request-response matching
--- Each TCP stream has a FIFO queue of request command codes
-----------------------------------------
--- Private state
-local queues = {}
-
--- Public interface
-local stream_queues = {}
-
-function stream_queues.enqueue(stream_id, command_code)
-    if not queues[stream_id] then
-        queues[stream_id] = {}
-    end
-    table.insert(queues[stream_id], command_code)
-end
-
-function stream_queues.dequeue(stream_id)
-    local queue = queues[stream_id]
-    if not queue or #queue == 0 then
-        return nil
-    end
-    local command_code = table.remove(queue, 1)
-
-    -- Clean up empty queue to prevent memory accumulation
-    if #queue == 0 then
-        queues[stream_id] = nil
-    end
-
-    return command_code
-end
-
-function stream_queues.clear_stream(stream_id)
-    queues[stream_id] = nil
-end
-
-function stream_queues.clear_all()
-    queues = {}
-end
 
 ----------------------------------------
 -- Command Registry
@@ -213,6 +173,45 @@ local STATUS_CODES = {
     -- Add more status codes as needed
 }
 
+----------------------------------------
+-- TCP stream tracking for request-response matching
+-- Each TCP stream has a FIFO queue of request command codes
+----------------------------------------
+-- Private state
+local queues = {}
+
+-- Public interface
+local stream_queues = {}
+
+function stream_queues.enqueue(stream_id, command_code)
+    if not queues[stream_id] then
+        queues[stream_id] = {}
+    end
+    table.insert(queues[stream_id], command_code)
+end
+
+function stream_queues.dequeue(stream_id)
+    local queue = queues[stream_id]
+    if not queue or #queue == 0 then
+        return nil
+    end
+    local command_code = table.remove(queue, 1)
+
+    -- Clean up empty queue to prevent memory accumulation
+    if #queue == 0 then
+        queues[stream_id] = nil
+    end
+
+    return command_code
+end
+
+function stream_queues.clear_stream(stream_id)
+    queues[stream_id] = nil
+end
+
+function stream_queues.clear_all()
+    queues = {}
+end
 
 ----------------------------------------
 -- Main dissector
@@ -387,7 +386,7 @@ function iggy.dissector(buffer, pinfo, tree)
 end
 
 ----------------------------------------
--- Port registration management
+-- Lifecycle callbacks (init, prefs_changed)
 ----------------------------------------
 local current_port = 0
 
@@ -409,10 +408,7 @@ function iggy.init()
     end
 end
 
-----------------------------------------
--- Preferences changed callback
 -- Called when user changes preferences in Wireshark UI
-----------------------------------------
 function iggy.prefs_changed()
     local tcp_port = DissectorTable.get("tcp.port")
 
