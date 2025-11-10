@@ -91,20 +91,23 @@ iggy.experts = {
 -- TCP stream tracking for request-response matching
 -- Each TCP stream has a FIFO queue of request command codes
 ----------------------------------------
-local stream_request_queues = {}
 local tcp_stream_field = Field.new("tcp.stream")
 
--- Helper: Enqueue a request code for a TCP stream
-local function enqueue_request(stream_id, command_code)
-    if not stream_request_queues[stream_id] then
-        stream_request_queues[stream_id] = {}
+-- Private state
+local queues = {}
+
+-- Public interface
+local stream_queues = {}
+
+function stream_queues.enqueue(stream_id, command_code)
+    if not queues[stream_id] then
+        queues[stream_id] = {}
     end
-    table.insert(stream_request_queues[stream_id], command_code)
+    table.insert(queues[stream_id], command_code)
 end
 
--- Helper: Dequeue a request code for a TCP stream
-local function dequeue_request(stream_id)
-    local queue = stream_request_queues[stream_id]
+function stream_queues.dequeue(stream_id)
+    local queue = queues[stream_id]
     if not queue or #queue == 0 then
         return nil
     end
@@ -112,10 +115,18 @@ local function dequeue_request(stream_id)
 
     -- Clean up empty queue to prevent memory accumulation
     if #queue == 0 then
-        stream_request_queues[stream_id] = nil
+        queues[stream_id] = nil
     end
 
     return command_code
+end
+
+function stream_queues.clear_stream(stream_id)
+    queues[stream_id] = nil
+end
+
+function stream_queues.clear_all()
+    queues = {}
 end
 
 ----------------------------------------
@@ -189,7 +200,6 @@ local COMMANDS = {
 -- Validate all registered commands
 for code, cmd in pairs(COMMANDS) do
     assert(type(code) == "number", "Command code must be a number")
-    -- Name must be a string with at least one non-whitespace character
     assert(type(cmd.name) == "string" and cmd.name:match("%S"),
         string.format("Command %d: name must be a non-empty string (not just whitespace)", code))
     assert(type(cmd.request_payload_dissector) == "function",
@@ -240,7 +250,7 @@ local function dissect_request(buffer, pinfo, tree)
     -- Track request code for request-response matching
     local tcp_stream = tcp_stream_field()
     if tcp_stream then
-        enqueue_request(tcp_stream.value, command_code)
+        stream_queues.enqueue(tcp_stream.value, command_code)
     end
 
     -- Update info column
@@ -270,7 +280,7 @@ local function dissect_response(buffer, pinfo, tree)
 
     -- Get matching request code for this TCP stream (FIFO order)
     local tcp_stream = tcp_stream_field()
-    local command_code = tcp_stream and dequeue_request(tcp_stream.value)
+    local command_code = tcp_stream and stream_queues.dequeue(tcp_stream.value)
     local command_info = command_code and COMMANDS[command_code]
 
     -- Add command name to response if we know which request this is responding to
@@ -313,7 +323,7 @@ function iggy.dissector(buffer, pinfo, tree)
 
     if tcp_stream and (fin or rst) then
         -- Clean up queue when connection closes (FIN or RST)
-        stream_request_queues[tcp_stream.value] = nil
+        stream_queues.clear_stream(tcp_stream.value)
     end
 
     local buflen = buffer:len()
@@ -379,7 +389,7 @@ local current_port = 0
 
 function iggy.init()
     -- Clear request queues to prevent memory accumulation
-    stream_request_queues = {}
+    stream_queues.clear_all()
 
     local tcp_port = DissectorTable.get("tcp.port")
 
@@ -407,7 +417,7 @@ function iggy.prefs_changed()
         -- Clear request queues when switching to different port
         -- The queues contain request-response matching data for the old port,
         -- which is no longer relevant for the new port
-        stream_request_queues = {}
+        stream_queues.clear_all()
 
         -- Remove old port registration
         if current_port > 0 then
