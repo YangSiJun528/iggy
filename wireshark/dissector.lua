@@ -461,50 +461,38 @@ function iggy.dissector(buffer, pinfo, tree)
         return
     end
 
-    -- Step 2: Calculate total packet size and request more data if needed
+    -- Step 2: Parse header and calculate total packet size
+    -- Store parsed values to avoid re-parsing and variable shadowing
+    local length_field, command_code, status_code, total_len
+
     if is_request then
         -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
-        local length_field = buffer(0, 4):le_uint()
-        local total_len = 4 + length_field
-
-        if buflen < total_len then
-            pinfo.desegment_len = total_len - buflen
-            return
-        end
-
-        -- Full packet available, proceed to validation and dissection
-
+        length_field = buffer(0, 4):le_uint()
+        command_code = buffer(4, 4):le_uint()
+        total_len = 4 + length_field
     elseif is_response then
         -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
-        local length_field = buffer(4, 4):le_uint()
-        local total_len = 8 + length_field
-
-        if buflen < total_len then
-            pinfo.desegment_len = total_len - buflen
-            return
-        end
-
-        -- Full packet available, proceed to validation and dissection
-
-    else
-        -- Unknown direction - neither request nor response port
-        local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Unknown)")
-        pinfo.cols.info:set(string.format("Unknown direction (src=%d, dst=%d, server=%d)",
-            pinfo.src_port, pinfo.dst_port, server_port))
-        return 0
+        status_code = buffer(0, 4):le_uint()
+        length_field = buffer(4, 4):le_uint()
+        total_len = 8 + length_field
     end
+
+    -- Request more data if needed
+    if buflen < total_len then
+        pinfo.desegment_len = total_len - buflen
+        return
+    end
+
+    -- Full packet available, proceed to validation and dissection
 
     ----------------------------------------
     -- Packet validation and dissection
-    -- At this point, we have a complete packet
+    -- At this point, we have a complete packet and parsed header fields
+    -- Note: Either is_request or is_response is always true (due to port-based registration)
     ----------------------------------------
 
     if is_request then
-        -- Parse and validate request
-        local length_field = buffer(0, 4):le_uint()
-        local command_code = buffer(4, 4):le_uint()
-        local total_len = 4 + length_field
-
+        -- Validate request (reuse parsed values: length_field, command_code, total_len)
         local is_known_command = COMMANDS[command_code] ~= nil
         local is_valid_length = length_field >= 4
         local is_matching_size = total_len == buflen
@@ -521,11 +509,7 @@ function iggy.dissector(buffer, pinfo, tree)
         return dissect_request(buffer, pinfo, tree)
 
     elseif is_response then
-        -- Parse and validate response
-        local status_code = buffer(0, 4):le_uint()
-        local length_field = buffer(4, 4):le_uint()
-        local total_len = 8 + length_field
-
+        -- Validate response (reuse parsed values: status_code, length_field, total_len)
         local is_valid = false
         if status_code ~= 0 then
             -- Error response: STATUS != 0, LENGTH = 0, no payload
