@@ -231,18 +231,30 @@ local function dissect_request(buffer, pinfo, tree)
     subtree:add_le(f_req_length, buffer(0, 4))
     subtree:add_le(f_req_command, buffer(4, 4))
 
-    -- Command name
+    -- Early return for unknown commands
     local command_info = COMMANDS[command_code]
-    local command_name = command_info and command_info.name or string.format("Unknown(0x%x)", command_code)
+    if not command_info then
+        local unknown_name = string.format("Unknown(0x%x)", command_code)
+        subtree:add(f_req_command_name, unknown_name):set_generated()
+
+        local payload_len = total_len - 8
+        if payload_len > 0 then
+            subtree:add(f_req_payload, buffer(8, payload_len))
+        end
+
+        pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", unknown_name, command_code, length))
+        return total_len
+    end
+
+    -- After this point, command_info is guaranteed to exist
+    local command_name = command_info.name
     subtree:add(f_req_command_name, command_name):set_generated()
 
     -- Payload
     local payload_len = total_len - 8
     if payload_len > 0 then
         local payload_tree = subtree:add(f_req_payload, buffer(8, payload_len))
-        if command_info then
-            command_info.request_payload_dissector(buffer, payload_tree, 8)
-        end
+        command_info.request_payload_dissector(buffer, payload_tree, 8)
     end
 
     -- Track request code for request-response matching
@@ -281,25 +293,40 @@ local function dissect_response(buffer, pinfo, tree)
     local command_code = tcp_stream and stream_queues.dequeue(tcp_stream.value)
     local command_info = command_code and COMMANDS[command_code]
 
-    -- Add command name to response if we know which request this is responding to
-    if command_info then
-        subtree:add(f_req_command_name, command_info.name):set_generated()
+    -- Early return for unknown commands (no matching request or unimplemented command)
+    if not command_info then
+        local unknown_name = "Unknown"
+        local payload_len = total_len - 8
+        if payload_len > 0 then
+            subtree:add(f_resp_payload, buffer(8, payload_len))
+        end
+
+        if status == 0 then
+            pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", unknown_name, length))
+        else
+            pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
+                unknown_name, status_name, status, length))
+        end
+        return total_len
     end
 
-    -- Payload (only for success responses with known command)
+    -- After this point, command_info is guaranteed to exist
+    local command_name = command_info.name
+    subtree:add(f_req_command_name, command_name):set_generated()
+
+    -- Payload (only for success responses)
     local payload_len = total_len - 8
-    if payload_len > 0 and command_info and status == 0 then
+    if payload_len > 0 and status == 0 then
         local payload_tree = subtree:add(f_resp_payload, buffer(8, payload_len))
         command_info.response_payload_dissector(buffer, payload_tree, 8)
     end
 
     -- Update info column
-    local command_name_str = command_info and command_info.name or "Unknown(or Not yet impl)"
     if status == 0 then
-        pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name_str, length))
+        pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
     else
         pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
-            command_name_str, status_name, status, length))
+            command_name, status_name, status, length))
     end
 
     return total_len
