@@ -108,6 +108,129 @@ local COMMANDS = {
             tree:add_le(f.user_id, buffer(offset, 4))
         end,
     },
+    [302] = {
+        name = "CreateTopic",
+        fields = {
+            request = {
+                stream_id_kind = ProtoField.uint8("iggy.create_topic.req.stream_id_kind", "Stream ID Kind", base.DEC),
+                stream_id_length = ProtoField.uint8("iggy.create_topic.req.stream_id_length", "Stream ID Length", base.DEC),
+                stream_id_value = ProtoField.string("iggy.create_topic.req.stream_id_value", "Stream ID Value"),
+                topic_id = ProtoField.uint32("iggy.create_topic.req.topic_id", "Topic ID", base.DEC),
+                partitions_count = ProtoField.uint32("iggy.create_topic.req.partitions_count", "Partitions Count", base.DEC),
+                compression_algorithm = ProtoField.uint8("iggy.create_topic.req.compression_algorithm", "Compression Algorithm", base.DEC),
+                message_expiry = ProtoField.uint64("iggy.create_topic.req.message_expiry", "Message Expiry (μs)", base.DEC),
+                max_topic_size = ProtoField.uint64("iggy.create_topic.req.max_topic_size", "Max Topic Size (bytes)", base.DEC),
+                replication_factor = ProtoField.uint8("iggy.create_topic.req.replication_factor", "Replication Factor", base.DEC),
+                name_len = ProtoField.uint8("iggy.create_topic.req.name_len", "Name Length", base.DEC),
+                name = ProtoField.string("iggy.create_topic.req.name", "Name"),
+            },
+            response = {
+                topic_id = ProtoField.uint32("iggy.create_topic.resp.topic_id", "Topic ID", base.DEC),
+                created_at = ProtoField.uint64("iggy.create_topic.resp.created_at", "Created At (μs)", base.DEC),
+                partitions_count = ProtoField.uint32("iggy.create_topic.resp.partitions_count", "Partitions Count", base.DEC),
+                message_expiry = ProtoField.uint64("iggy.create_topic.resp.message_expiry", "Message Expiry (μs)", base.DEC),
+                compression_algorithm = ProtoField.uint8("iggy.create_topic.resp.compression_algorithm", "Compression Algorithm", base.DEC),
+                max_topic_size = ProtoField.uint64("iggy.create_topic.resp.max_topic_size", "Max Topic Size (bytes)", base.DEC),
+                replication_factor = ProtoField.uint8("iggy.create_topic.resp.replication_factor", "Replication Factor", base.DEC),
+                size = ProtoField.uint64("iggy.create_topic.resp.size", "Size (bytes)", base.DEC),
+                messages_count = ProtoField.uint64("iggy.create_topic.resp.messages_count", "Messages Count", base.DEC),
+                name_len = ProtoField.uint8("iggy.create_topic.resp.name_len", "Name Length", base.DEC),
+                name = ProtoField.string("iggy.create_topic.resp.name", "Name"),
+            },
+        },
+        request_payload_dissector = function(buffer, tree, offset)
+            -- core/common/src/commands/topics/create_topic.rs:114
+            local f = COMMANDS[302].fields.request
+
+            -- Stream ID (Identifier: kind + length + value)
+            local stream_id_kind = buffer(offset, 1):uint()
+            tree:add(f.stream_id_kind, buffer(offset, 1))
+            offset = offset + 1
+
+            local stream_id_length = buffer(offset, 1):uint()
+            tree:add(f.stream_id_length, buffer(offset, 1))
+            offset = offset + 1
+
+            tree:add(f.stream_id_value, buffer(offset, stream_id_length))
+            offset = offset + stream_id_length
+
+            -- Topic ID (u32 le, 0 if None)
+            tree:add_le(f.topic_id, buffer(offset, 4))
+            offset = offset + 4
+
+            -- Partitions Count (u32 le)
+            tree:add_le(f.partitions_count, buffer(offset, 4))
+            offset = offset + 4
+
+            -- Compression Algorithm (u8)
+            tree:add(f.compression_algorithm, buffer(offset, 1))
+            offset = offset + 1
+
+            -- Message Expiry (u64 le)
+            tree:add_le(f.message_expiry, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Max Topic Size (u64 le)
+            tree:add_le(f.max_topic_size, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Replication Factor (u8, 0 if None)
+            tree:add(f.replication_factor, buffer(offset, 1))
+            offset = offset + 1
+
+            -- Name (u8 length + string)
+            local name_len = buffer(offset, 1):uint()
+            tree:add(f.name_len, buffer(offset, 1))
+            offset = offset + 1
+            tree:add(f.name, buffer(offset, name_len))
+        end,
+        response_payload_dissector = function(buffer, tree, offset)
+            -- core/binary_protocol/src/utils/mapper.rs:638
+            local f = COMMANDS[302].fields.response
+
+            -- Topic ID (u32 le)
+            tree:add_le(f.topic_id, buffer(offset, 4))
+            offset = offset + 4
+
+            -- Created At (u64 le)
+            tree:add_le(f.created_at, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Partitions Count (u32 le)
+            tree:add_le(f.partitions_count, buffer(offset, 4))
+            offset = offset + 4
+
+            -- Message Expiry (u64 le)
+            tree:add_le(f.message_expiry, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Compression Algorithm (u8)
+            tree:add(f.compression_algorithm, buffer(offset, 1))
+            offset = offset + 1
+
+            -- Max Topic Size (u64 le)
+            tree:add_le(f.max_topic_size, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Replication Factor (u8)
+            tree:add(f.replication_factor, buffer(offset, 1))
+            offset = offset + 1
+
+            -- Size (u64 le)
+            tree:add_le(f.size, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Messages Count (u64 le)
+            tree:add_le(f.messages_count, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Name (u8 length + string)
+            local name_len = buffer(offset, 1):uint()
+            tree:add(f.name_len, buffer(offset, 1))
+            offset = offset + 1
+            tree:add(f.name, buffer(offset, name_len))
+        end,
+    },
 }
 
 for code, cmd in pairs(COMMANDS) do
