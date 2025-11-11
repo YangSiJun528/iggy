@@ -322,12 +322,14 @@ function ReqRespTracker:record_request(pinfo, request_data)
     if not pinfo.conversation then
         return false
     end
-
+    -- 1. pinfo.conversation 획득 (Wireshark가 자동 제공)
     local conv = pinfo.conversation
+    -- 2. conv[iggy] 에서 기존 데이터 로드 없으면 새로 초기화
     local conv_data = conv[self.proto] or { requests = {}, matched = {} }
 
-    -- Store request indexed by frame number
+    -- 3. 요청 정보 저장
     conv_data.requests[pinfo.number] = request_data
+    -- 4. 업데이트된 데이터 다시 저장
     conv[self.proto] = conv_data
 
     return true
@@ -342,6 +344,7 @@ function ReqRespTracker:find_request(pinfo)
         return nil
     end
 
+    -- 1. pinfo.conversation 획득 (Wireshark가 자동 제공)
     local conv = pinfo.conversation
     local conv_data = conv[self.proto]
 
@@ -351,19 +354,21 @@ function ReqRespTracker:find_request(pinfo)
 
     local resp_frame_num = pinfo.number
 
-    -- Check if already matched
+    -- 2. 캐시 확인
     if conv_data.matched[resp_frame_num] then
+        -- 있으면 즉시 반환
         return conv_data.requests[conv_data.matched[resp_frame_num]]
     end
 
-    -- Find most recent unmatched request
     local best_req_frame = nil
     local best_req_data = nil
 
+    -- 3. 역방향 검색 (최근에 온 요청 순으로)
     for req_frame, req_data in pairs(conv_data.requests) do
+        -- 현재(응답) 프레임보다 이전 시점이여야 함
         if req_frame < resp_frame_num then
-            -- Check if this request is already matched to another response
             local already_matched = false
+            -- 이미 매칭 된 상태인지 확인
             for _, matched_req_frame in pairs(conv_data.matched) do
                 if matched_req_frame == req_frame then
                     already_matched = true
@@ -371,6 +376,7 @@ function ReqRespTracker:find_request(pinfo)
                 end
             end
 
+            -- 매칭 안 된 요청 중 가장 큰 프레임 번호(가장 최근)를 선택
             if not already_matched then
                 if not best_req_frame or req_frame > best_req_frame then
                     best_req_frame = req_frame
@@ -380,7 +386,7 @@ function ReqRespTracker:find_request(pinfo)
         end
     end
 
-    -- Cache the match
+    -- 4. 매칭 결과 캐싱 후 반환
     if best_req_frame then
         conv_data.matched[resp_frame_num] = best_req_frame
         conv[self.proto] = conv_data
