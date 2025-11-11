@@ -299,9 +299,25 @@ local STATUS_CODES = {
 
 ----------------------------------------
 -- TCP stream tracking for request-response matching
+-- Using queue to support pipelining (request1, request2, response1, response2)
 ----------------------------------------
-local stream_requests = {}
+local stream_requests = {}  -- [stream_id] = { queue of command_codes }
 local tcp_stream_field = Field.new("tcp.stream")
+
+-- Helper functions for queue operations
+local function queue_push(stream_id, command_code)
+    if not stream_requests[stream_id] then
+        stream_requests[stream_id] = {}
+    end
+    table.insert(stream_requests[stream_id], command_code)
+end
+
+local function queue_pop(stream_id)
+    if not stream_requests[stream_id] or #stream_requests[stream_id] == 0 then
+        return nil
+    end
+    return table.remove(stream_requests[stream_id], 1)
+end
 
 ----------------------------------------
 -- Main dissector
@@ -387,10 +403,10 @@ function iggy.dissector(buffer, pinfo, tree)
                 command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
             end
 
-            -- Track request code for request-response matching
+            -- Track request code for request-response matching (enqueue)
             local tcp_stream = tcp_stream_field()
             if tcp_stream then
-                stream_requests[tcp_stream.value] = command_code
+                queue_push(tcp_stream.value, command_code)
             end
 
             -- Update info column
@@ -411,9 +427,9 @@ function iggy.dissector(buffer, pinfo, tree)
             local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
             subtree:add(cf.resp_status_name, status_name):set_generated()
 
-            -- Get last request code for this TCP stream
+            -- Get matching request code for this TCP stream (dequeue)
             local tcp_stream = tcp_stream_field()
-            local command_code = tcp_stream and stream_requests[tcp_stream.value]
+            local command_code = tcp_stream and queue_pop(tcp_stream.value)
             local command_info = command_code and COMMANDS[command_code]
 
             -- Early return for unknown commands (no matching request or unimplemented command)
