@@ -42,6 +42,7 @@ local common_fields = {
 local COMMANDS = {
     [1] = {
         name = "Ping",
+        fields = { request = {}, response = {},},
         request_payload_dissector = function(buffer, tree, offset)
             -- No request payload
         end,
@@ -51,8 +52,6 @@ local COMMANDS = {
     },
     [38] = {
         name = "LoginUser",
-
-        -- Command-specific fields
         fields = {
             request = {
                 username_len = ProtoField.uint8("iggy.login_user.req.username_len", "Username Length", base.DEC),
@@ -68,7 +67,6 @@ local COMMANDS = {
                 user_id = ProtoField.uint32("iggy.login_user.resp.user_id", "User ID", base.DEC),
             },
         },
-
         request_payload_dissector = function(buffer, tree, offset)
             -- Username & Password at least 3 bytes: core/common/src/commands/users/defaults.rs
             local f = COMMANDS[38].fields.request
@@ -104,7 +102,6 @@ local COMMANDS = {
                 tree:add(f.context, buffer(offset, context_len))
             end
         end,
-
         response_payload_dissector = function(buffer, tree, offset)
             -- see: core/binary_protocol/src/utils/mapper.rs:455
             local f = COMMANDS[38].fields.response
@@ -113,16 +110,27 @@ local COMMANDS = {
     },
 }
 
--- Validate all registered commands
-local dissector_err = "must be function, not nil (nil is ambiguous: no payload or unimplemented)"
 for code, cmd in pairs(COMMANDS) do
-    assert(type(code) == "number", "Command code must be a number")
+    assert(type(code) == "number", "Command code must be number")
     assert(type(cmd.name) == "string" and cmd.name:match("%S"),
         string.format("Command %d: name must be non-empty string", code))
     assert(type(cmd.request_payload_dissector) == "function",
-        string.format("Command %d (%s): request_payload_dissector %s", code, cmd.name, dissector_err))
+        string.format(
+            "Command %d (%s): request_payload_dissector must be function (found %s); use empty fn if no payload",
+            code, cmd.name, type(cmd.request_payload_dissector)))
     assert(type(cmd.response_payload_dissector) == "function",
-        string.format("Command %d (%s): response_payload_dissector %s", code, cmd.name, dissector_err))
+        string.format(
+            "Command %d (%s): response_payload_dissector must be function (found %s); use empty fn if no payload",
+            code, cmd.name, type(cmd.response_payload_dissector)))
+    assert(type(cmd.fields) == "table",
+        string.format("Command %d (%s): fields must be table (found %s); use {} if no fields",
+            code, cmd.name, type(cmd.fields)))
+    assert(type(cmd.fields.request) == "table",
+        string.format("Command %d (%s): fields.request must be table (found %s); use {} if none",
+            code, cmd.name, type(cmd.fields.request)))
+    assert(type(cmd.fields.response) == "table",
+        string.format("Command %d (%s): fields.response must be table (found %s); use {} if none",
+            code, cmd.name, type(cmd.fields.response)))
 end
 
 ----------------------------------------
@@ -182,7 +190,7 @@ function iggy.dissector(buffer, pinfo, tree)
     local server_port = iggy.prefs.server_port
     local is_request = (pinfo.dst_port == server_port)
     local is_response = (pinfo.src_port == server_port)
-    local cf = common_fields  -- Shorthand for common fields
+    local cf = common_fields -- Shorthand for common fields
 
     ----------------------------------------
     -- TCP Desegmentation: Ensure we have complete packet
@@ -264,7 +272,6 @@ function iggy.dissector(buffer, pinfo, tree)
 
             -- Update info column
             pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
-
         elseif is_response then
             -- Response dissection
             local status_code = buffer(0, 4):le_uint()
