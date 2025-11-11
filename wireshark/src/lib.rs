@@ -322,7 +322,11 @@ mod tests {
             .expect("Command name field missing");
         assert_eq!(cmd_name, "LoginUser", "Command name should be 'LoginUser'");
 
-        let username = iggy
+        let payload_tree = iggy
+            .get("iggy.request.payload_tree")
+            .expect("Request payload_tree missing");
+
+        let username = payload_tree
             .get("iggy.login_user.req.username")
             .and_then(|v| v.as_str())
             .expect("Username field missing");
