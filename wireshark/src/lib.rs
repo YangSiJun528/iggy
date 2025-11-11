@@ -24,6 +24,7 @@ mod tests {
         port: u16,
         pcap_file: PathBuf,
         dissector_path: PathBuf,
+        debug: bool,
     }
 
     impl TsharkCapture {
@@ -46,23 +47,31 @@ mod tests {
                 port,
                 pcap_file: PathBuf::from(file),
                 dissector_path,
+                debug: true,
             })
         }
 
         fn start(&self) -> io::Result<Child> {
             let mut command = ProcessCommand::new("tshark");
 
+            // macOS uses 'lo0', Linux uses 'lo'
+            let loopback_interface = if cfg!(target_os = "macos") {
+                "lo0"
+            } else {
+                "lo"
+            };
+
             command
                 .args([
                     "-i",
-                    "lo",
+                    loopback_interface,
                     "-w",
                     self.pcap_file.to_str().unwrap(),
                     "-f",
                     &format!("tcp and host {} and port {}", self.ip, self.port),
                 ])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .stdout(Stdio::null())  // Don't capture stdout to avoid blocking
+                .stderr(Stdio::null());  // Don't capture stderr to avoid blocking
 
             // Add Lua script and port configuration
             command.arg("-X");
@@ -75,7 +84,31 @@ mod tests {
             command.spawn()
         }
 
+        fn stop(&self, mut child: Child) -> io::Result<()> {
+            // Send SIGTERM to allow tshark to flush packets properly
+            // On Unix, we can use kill() which sends SIGTERM by default
+            drop(child.kill());
+
+            // Wait for process to exit
+            let status = child.wait()?;
+
+            if self.debug {
+                println!("tshark capture exit status: {:?}", status);
+            }
+
+            Ok(())
+        }
+
         fn analyze(&self) -> io::Result<Vec<Value>> {
+            // Check if pcap file exists and its size
+            if self.debug {
+                if let Ok(metadata) = fs::metadata(&self.pcap_file) {
+                    println!("PCAP file size: {} bytes", metadata.len());
+                } else {
+                    println!("PCAP file not found: {:?}", self.pcap_file);
+                }
+            }
+
             let output = ProcessCommand::new("tshark")
                 .args([
                     "-r",
@@ -92,9 +125,11 @@ mod tests {
                 ])
                 .output()?;
 
-            println!("tshark analyze exit status: {:?}", output.status);
-            if !output.stderr.is_empty() {
-                println!("tshark stderr: {}", String::from_utf8_lossy(&output.stderr));
+            if self.debug {
+                println!("tshark analyze exit status: {:?}", output.status);
+                if !output.stderr.is_empty() {
+                    println!("tshark analyze stderr: {}", String::from_utf8_lossy(&output.stderr));
+                }
             }
 
             if !output.status.success() {
@@ -105,15 +140,19 @@ mod tests {
             }
 
             let json_str = String::from_utf8_lossy(&output.stdout);
-            println!("tshark output length: {} bytes", json_str.len());
+            if self.debug {
+                println!("tshark output length: {} bytes", json_str.len());
+            }
 
             if json_str.trim().is_empty() {
                 return Ok(Vec::new());
             }
 
             let packets: Vec<Value> = serde_json::from_str(&json_str).map_err(|e| {
-                println!("JSON parse error: {}", e);
-                println!("Raw output: {}", json_str);
+                if self.debug {
+                    println!("JSON parse error: {}", e);
+                    println!("Raw output: {}", json_str);
+                }
                 io::Error::new(io::ErrorKind::Other, e)
             })?;
 
@@ -189,7 +228,7 @@ mod tests {
 
         // Start packet capture
         let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
+        let tshark = capture.start()?;
         sleep(Duration::from_millis(1000)).await;
 
         // Create client (this will also send login, which is fine)
@@ -202,7 +241,7 @@ mod tests {
         sleep(Duration::from_secs(2)).await;
 
         // Stop capture and analyze
-        let _ = tshark.kill();
+        capture.stop(tshark)?;
         sleep(Duration::from_millis(500)).await;
 
         let packets = capture.analyze()?;
@@ -288,7 +327,7 @@ mod tests {
 
         // Start packet capture
         let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
+        let tshark = capture.start()?;
         sleep(Duration::from_millis(1000)).await;
 
         // Create TCP client without auto-login, then manually login
@@ -309,7 +348,7 @@ mod tests {
         sleep(Duration::from_secs(2)).await;
 
         // Stop capture and analyze
-        let _ = tshark.kill();
+        capture.stop(tshark)?;
         sleep(Duration::from_millis(500)).await;
 
         let packets = capture.analyze()?;
