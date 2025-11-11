@@ -456,7 +456,7 @@ function iggy.dissector(buffer, pinfo, tree)
             -- Early return for unknown commands
             local command_info = COMMANDS[command_code]
             if not command_info then
-                local unknown_name = string.format("Unknown(0x%x)", command_code)
+                local unknown_name = "Unknown"
                 subtree:add(cf.req_command_name, unknown_name):set_generated()
 
                 if payload_len > 0 then
