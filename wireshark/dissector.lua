@@ -197,10 +197,7 @@ function iggy.dissector(buffer, pinfo, tree)
     local tcp_flags_fin = Field.new("tcp.flags.fin")
     local tcp_flags_reset = Field.new("tcp.flags.reset")
 
-    local fin = tcp_flags_fin()
-    local rst = tcp_flags_reset()
-
-    if tcp_stream and (fin or rst) then
+    if tcp_stream and (tcp_flags_fin or tcp_flags_reset) then
         -- Clean up queue when connection closes (FIN or RST)
         stream_queues.clear_stream(tcp_stream.value)
     end
@@ -330,7 +327,7 @@ function iggy.dissector(buffer, pinfo, tree)
             local command_name = command_info.name
             subtree:add(f_req_command_name, command_name):set_generated()
 
-            -- Payload (only for success responses)
+            -- Payload (only for status_code is 0(OK))
             if payload_len > 0 and status_code == 0 then
                 local payload_tree = subtree:add(f_resp_payload, buffer(payload_offset, payload_len))
                 command_info.response_payload_dissector(buffer, payload_tree, payload_offset)
