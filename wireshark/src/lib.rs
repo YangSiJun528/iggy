@@ -31,8 +31,7 @@ mod tests {
             let file = format!("/tmp/iggy_test_{}.pcap", port);
 
             // Find dissector.lua in the workspace root
-            let dissector_path = std::env::current_dir()?
-                .join("dissector.lua");
+            let dissector_path = std::env::current_dir()?.join("dissector.lua");
 
             if !dissector_path.exists() {
                 return Err(io::Error::new(
@@ -144,7 +143,9 @@ mod tests {
         client.connect().await?;
 
         // Explicitly login with default root credentials
-        client.login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD).await?;
+        client
+            .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
+            .await?;
 
         Ok(client)
     }
@@ -166,7 +167,11 @@ mod tests {
 
             if show_all {
                 // Print full packet JSON
-                println!("{}", serde_json::to_string_pretty(packet).unwrap_or_else(|_| "Error serializing packet".to_string()));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(packet)
+                        .unwrap_or_else(|_| "Error serializing packet".to_string())
+                );
             } else {
                 // Print only relevant layers: TCP and Iggy
                 if let Some(layers) = packet["_source"]["layers"].as_object() {
@@ -179,7 +184,11 @@ mod tests {
                     // Iggy layer
                     if let Some(iggy) = layers.get("iggy") {
                         println!("\nIggy Protocol Layer:");
-                        println!("{}", serde_json::to_string_pretty(iggy).unwrap_or_else(|_| "Error".to_string()));
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(iggy)
+                                .unwrap_or_else(|_| "Error".to_string())
+                        );
                     }
                 }
             }
@@ -223,64 +232,60 @@ mod tests {
             return Err("No Iggy packets captured".into());
         }
 
-        // Verify we have both Ping request and response
-        let mut found_request = false;
-        let mut found_response = false;
+        // Verify Ping request
+        let (idx, iggy) = iggy_packets
+            .iter()
+            .enumerate()
+            .find_map(|(idx, packet)| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let command = iggy.get("iggy.request.command")?.as_str()?;
+                (command == "1").then_some((idx, iggy))
+            })
+            .expect("Ping request (command 1) not found in capture");
 
-        for (idx, packet) in iggy_packets.iter().enumerate() {
-            let iggy = &packet["_source"]["layers"]["iggy"];
+        println!("Packet {}: ✓ Ping request found", idx);
 
-            // Check for Ping request (command code 1)
-            if let Some(command) = iggy.get("iggy.request.command") {
-                if let Some(cmd_val) = command.as_str() {
-                    if cmd_val == "1" {
-                        found_request = true;
-                        println!("Packet {}: ✓ Ping request found", idx);
+        let cmd_name = iggy
+            .get("iggy.request.command_name")
+            .and_then(|v| v.as_str())
+            .expect("Command name field missing");
+        assert_eq!(cmd_name, "Ping", "Command name should be 'Ping'");
+        println!("  - Command name: Ping");
 
-                        // Verify command name
-                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                            assert_eq!(cmd_name.as_str(), Some("Ping"), "Command name should be 'Ping'");
-                            println!("  - Command name: Ping");
-                        }
+        let length = iggy
+            .get("iggy.request.length")
+            .and_then(|v| v.as_str())
+            .expect("Request length field missing");
+        assert_eq!(length, "4", "Ping request length should be 4");
+        println!("  - Request length: 4");
 
-                        // Verify request length (should be 4, only command code, no payload)
-                        if let Some(length) = iggy.get("iggy.request.length") {
-                            assert_eq!(length.as_str(), Some("4"), "Ping request length should be 4");
-                            println!("  - Request length: 4");
-                        }
-                    }
-                }
-            }
+        // Verify Ping response
+        let (idx, iggy) = iggy_packets
+            .iter()
+            .enumerate()
+            .find_map(|(idx, packet)| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let cmd_name = iggy.get("iggy.request.command_name")?.as_str()?;
+                let status = iggy.get("iggy.response.status")?.as_str()?;
+                (cmd_name == "Ping" && status == "0").then_some((idx, iggy))
+            })
+            .expect("Ping response (status 0, length 0) not found in capture");
 
-            // Check for Ping response (status 0, no payload)
-            if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                if cmd_name.as_str() == Some("Ping") {
-                    if let Some(status) = iggy.get("iggy.response.status") {
-                        if let Some(status_val) = status.as_str() {
-                            if status_val == "0" {
-                                // Check response length (should be 0 for Ping)
-                                if let Some(length) = iggy.get("iggy.response.length") {
-                                    if length.as_str() == Some("0") {
-                                        found_response = true;
-                                        println!("Packet {}: ✓ Ping response found", idx);
-                                        println!("  - Status: OK (0)");
-                                        println!("  - Response length: 0");
+        println!("Packet {}: ✓ Ping response found", idx);
+        println!("  - Status: OK (0)");
 
-                                        // Verify status name
-                                        if let Some(status_name) = iggy.get("iggy.response.status_name") {
-                                            assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let resp_length = iggy
+            .get("iggy.response.length")
+            .and_then(|v| v.as_str())
+            .expect("Response length field missing");
+        assert_eq!(resp_length, "0", "Ping response length should be 0");
+        println!("  - Response length: 0");
 
-        assert!(found_request, "Ping request (command 1) not found in capture");
-        assert!(found_response, "Ping response (status 0, length 0) not found in capture");
+        let status_name = iggy
+            .get("iggy.response.status_name")
+            .and_then(|v| v.as_str())
+            .expect("Status name field missing");
+        assert_eq!(status_name, "OK", "Status name should be 'OK'");
 
         println!("\n✓ Ping dissection test passed - verified request and response");
         Ok(())
@@ -307,7 +312,9 @@ mod tests {
         client.connect().await?;
 
         println!("Sending LoginUser command...");
-        client.login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD).await?;
+        client
+            .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
+            .await?;
         println!("Login successful");
 
         // Wait for packets to be captured
@@ -330,80 +337,82 @@ mod tests {
             return Err("No Iggy packets captured".into());
         }
 
-        // Verify we have both LoginUser request and response
-        let mut found_request = false;
-        let mut found_response = false;
+        // Verify LoginUser request
+        let (idx, iggy) = iggy_packets
+            .iter()
+            .enumerate()
+            .find_map(|(idx, packet)| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let command = iggy.get("iggy.request.command")?.as_str()?;
+                (command == "38").then_some((idx, iggy))
+            })
+            .expect("LoginUser request (command 38) not found in capture");
 
-        for (idx, packet) in iggy_packets.iter().enumerate() {
-            let iggy = &packet["_source"]["layers"]["iggy"];
+        println!("Packet {}: ✓ LoginUser request found", idx);
 
-            // Check for LoginUser request (command code 38)
-            if let Some(command) = iggy.get("iggy.request.command") {
-                if let Some(cmd_val) = command.as_str() {
-                    if cmd_val == "38" {
-                        found_request = true;
-                        println!("Packet {}: ✓ LoginUser request found", idx);
+        let cmd_name = iggy
+            .get("iggy.request.command_name")
+            .and_then(|v| v.as_str())
+            .expect("Command name field missing");
+        assert_eq!(cmd_name, "LoginUser", "Command name should be 'LoginUser'");
+        println!("  - Command name: LoginUser");
 
-                        // Verify command name
-                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                            assert_eq!(cmd_name.as_str(), Some("LoginUser"), "Command name should be 'LoginUser'");
-                            println!("  - Command name: LoginUser");
-                        }
+        let username = iggy
+            .get("iggy.login_user.req.username")
+            .and_then(|v| v.as_str())
+            .expect("Username field missing");
+        assert_eq!(username, DEFAULT_ROOT_USERNAME, "Username should match");
+        println!("  - Username: {}", DEFAULT_ROOT_USERNAME);
 
-                        // Verify username field
-                        if let Some(username) = iggy.get("iggy.login_user.req.username") {
-                            assert_eq!(username.as_str(), Some(DEFAULT_ROOT_USERNAME), "Username should match");
-                            println!("  - Username: {}", DEFAULT_ROOT_USERNAME);
-                        }
+        let username_len = iggy
+            .get("iggy.login_user.req.username_len")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Username length: {}", username_len);
 
-                        // Verify request has username length field
-                        if let Some(username_len) = iggy.get("iggy.login_user.req.username_len") {
-                            println!("  - Username length: {}", username_len.as_str().unwrap_or("N/A"));
-                        }
+        let password_len = iggy
+            .get("iggy.login_user.req.password_len")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Password length: {}", password_len);
 
-                        // Verify request has password length field
-                        if let Some(password_len) = iggy.get("iggy.login_user.req.password_len") {
-                            println!("  - Password length: {}", password_len.as_str().unwrap_or("N/A"));
-                        }
-                    }
-                }
-            }
+        // Verify LoginUser response
+        let (idx, iggy) = iggy_packets
+            .iter()
+            .enumerate()
+            .find_map(|(idx, packet)| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let cmd_name = iggy.get("iggy.request.command_name")?.as_str()?;
+                let status = iggy.get("iggy.response.status")?.as_str()?;
+                (cmd_name == "LoginUser" && status == "0").then_some((idx, iggy))
+            })
+            .expect("LoginUser response (status 0, user_id) not found in capture");
 
-            // Check for LoginUser response (status 0 with user_id payload)
-            if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                if cmd_name.as_str() == Some("LoginUser") {
-                    if let Some(status) = iggy.get("iggy.response.status") {
-                        if let Some(status_val) = status.as_str() {
-                            if status_val == "0" {
-                                // Check if response has payload_tree with user_id field
-                                if let Some(payload_tree) = iggy.get("iggy.response.payload_tree") {
-                                    if let Some(user_id) = payload_tree.get("iggy.login_user.resp.user_id") {
-                                        found_response = true;
-                                        println!("Packet {}: ✓ LoginUser response found", idx);
-                                        println!("  - Status: OK (0)");
-                                        println!("  - User ID: {}", user_id.as_str().unwrap_or("N/A"));
+        println!("Packet {}: ✓ LoginUser response found", idx);
+        println!("  - Status: OK (0)");
 
-                                        // Verify status name
-                                        if let Some(status_name) = iggy.get("iggy.response.status_name") {
-                                            assert_eq!(status_name.as_str(), Some("OK"), "Status name should be 'OK'");
-                                        }
+        let payload_tree = iggy
+            .get("iggy.response.payload_tree")
+            .expect("Response payload_tree missing");
 
-                                        // Verify response length (should be 4 for user_id u32)
-                                        if let Some(length) = iggy.get("iggy.response.length") {
-                                            assert_eq!(length.as_str(), Some("4"), "LoginUser response length should be 4");
-                                            println!("  - Response length: 4");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let user_id = payload_tree
+            .get("iggy.login_user.resp.user_id")
+            .and_then(|v| v.as_str())
+            .expect("User ID field missing");
+        println!("  - User ID: {}", user_id);
 
-        assert!(found_request, "LoginUser request (command 38) not found in capture");
-        assert!(found_response, "LoginUser response (status 0, user_id) not found in capture");
+        let status_name = iggy
+            .get("iggy.response.status_name")
+            .and_then(|v| v.as_str())
+            .expect("Status name field missing");
+        assert_eq!(status_name, "OK", "Status name should be 'OK'");
+
+        let length = iggy
+            .get("iggy.response.length")
+            .and_then(|v| v.as_str())
+            .expect("Response length field missing");
+        assert_eq!(length, "4", "LoginUser response length should be 4");
+        println!("  - Response length: 4");
 
         println!("\n✓ LoginUser dissection test passed - verified request and response");
         Ok(())
@@ -471,187 +480,141 @@ mod tests {
             return Err("No Iggy packets captured".into());
         }
 
-        // Verify we have both CreateTopic request and response
-        let mut found_request = false;
-        let mut found_response = false;
+        // Verify CreateTopic request
+        let (idx, iggy) = iggy_packets
+            .iter()
+            .enumerate()
+            .find_map(|(idx, packet)| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let command = iggy.get("iggy.request.command")?.as_str()?;
+                (command == "302").then_some((idx, iggy))
+            })
+            .expect("CreateTopic request (command 302) not found in capture");
 
-        for (idx, packet) in iggy_packets.iter().enumerate() {
-            let iggy = &packet["_source"]["layers"]["iggy"];
+        println!("Packet {}: ✓ CreateTopic request found", idx);
 
-            // Check for CreateTopic request (command code 302)
-            if let Some(command) = iggy.get("iggy.request.command") {
-                if let Some(cmd_val) = command.as_str() {
-                    if cmd_val == "302" {
-                        found_request = true;
-                        println!("Packet {}: ✓ CreateTopic request found", idx);
-
-                        // Verify command name
-                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                            assert_eq!(
-                                cmd_name.as_str(),
-                                Some("CreateTopic"),
-                                "Command name should be 'CreateTopic'"
-                            );
-                            println!("  - Command name: CreateTopic");
-                        }
-
-                        // Verify request fields
-                        if let Some(payload_tree) = iggy.get("iggy.request.payload_tree") {
-                            // Stream ID
-                            if let Some(stream_id_kind) =
-                                payload_tree.get("iggy.create_topic.req.stream_id_kind")
-                            {
-                                println!(
-                                    "  - Stream ID kind: {}",
-                                    stream_id_kind.as_str().unwrap_or("N/A")
-                                );
-                            }
-
-                            // Partitions count
-                            if let Some(partitions) =
-                                payload_tree.get("iggy.create_topic.req.partitions_count")
-                            {
-                                assert_eq!(
-                                    partitions.as_str(),
-                                    Some(partitions_count.to_string().as_str()),
-                                    "Partitions count should match"
-                                );
-                                println!("  - Partitions count: {}", partitions_count);
-                            }
-
-                            // Topic name
-                            if let Some(name) = payload_tree.get("iggy.create_topic.req.name") {
-                                assert_eq!(
-                                    name.as_str(),
-                                    Some(topic_name),
-                                    "Topic name should match"
-                                );
-                                println!("  - Topic name: {}", topic_name);
-                            }
-
-                            // Compression algorithm
-                            if let Some(compression) =
-                                payload_tree.get("iggy.create_topic.req.compression_algorithm")
-                            {
-                                println!(
-                                    "  - Compression: {}",
-                                    compression.as_str().unwrap_or("N/A")
-                                );
-                            }
-
-                            // Message expiry
-                            if let Some(expiry) =
-                                payload_tree.get("iggy.create_topic.req.message_expiry")
-                            {
-                                println!("  - Message expiry: {}", expiry.as_str().unwrap_or("N/A"));
-                            }
-
-                            // Max topic size
-                            if let Some(max_size) =
-                                payload_tree.get("iggy.create_topic.req.max_topic_size")
-                            {
-                                println!("  - Max topic size: {}", max_size.as_str().unwrap_or("N/A"));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check for CreateTopic response (status 0 with TopicDetails payload)
-            if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
-                if cmd_name.as_str() == Some("CreateTopic") {
-                    if let Some(status) = iggy.get("iggy.response.status") {
-                        if let Some(status_val) = status.as_str() {
-                            if status_val == "0" {
-                                // Check if response has payload with topic details
-                                if let Some(payload_tree) = iggy.get("iggy.response.payload_tree") {
-                                    if let Some(resp_name) =
-                                        payload_tree.get("iggy.create_topic.resp.name")
-                                    {
-                                        if resp_name.as_str() == Some(topic_name) {
-                                            found_response = true;
-                                            println!("Packet {}: ✓ CreateTopic response found", idx);
-                                            println!("  - Status: OK (0)");
-
-                                            // Verify status name
-                                            if let Some(status_name) = iggy.get("iggy.response.status_name")
-                                            {
-                                                assert_eq!(
-                                                    status_name.as_str(),
-                                                    Some("OK"),
-                                                    "Status name should be 'OK'"
-                                                );
-                                            }
-
-                                            // Topic ID
-                                            if let Some(topic_id) =
-                                                payload_tree.get("iggy.create_topic.resp.topic_id")
-                                            {
-                                                println!(
-                                                    "  - Topic ID: {}",
-                                                    topic_id.as_str().unwrap_or("N/A")
-                                                );
-                                            }
-
-                                            // Created At
-                                            if let Some(created_at) =
-                                                payload_tree.get("iggy.create_topic.resp.created_at")
-                                            {
-                                                println!(
-                                                    "  - Created At: {}",
-                                                    created_at.as_str().unwrap_or("N/A")
-                                                );
-                                            }
-
-                                            // Partitions count
-                                            if let Some(partitions) = payload_tree
-                                                .get("iggy.create_topic.resp.partitions_count")
-                                            {
-                                                assert_eq!(
-                                                    partitions.as_str(),
-                                                    Some(partitions_count.to_string().as_str()),
-                                                    "Response partitions count should match request"
-                                                );
-                                                println!("  - Partitions count: {}", partitions_count);
-                                            }
-
-                                            // Topic name
-                                            println!("  - Topic name: {}", topic_name);
-
-                                            // Size (should be 0 for new topic)
-                                            if let Some(size) =
-                                                payload_tree.get("iggy.create_topic.resp.size")
-                                            {
-                                                println!("  - Size: {}", size.as_str().unwrap_or("N/A"));
-                                            }
-
-                                            // Messages count (should be 0 for new topic)
-                                            if let Some(messages_count) = payload_tree
-                                                .get("iggy.create_topic.resp.messages_count")
-                                            {
-                                                println!(
-                                                    "  - Messages count: {}",
-                                                    messages_count.as_str().unwrap_or("N/A")
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        assert!(
-            found_request,
-            "CreateTopic request (command 302) not found in capture"
+        let cmd_name = iggy
+            .get("iggy.request.command_name")
+            .and_then(|v| v.as_str())
+            .expect("Command name field missing");
+        assert_eq!(
+            cmd_name, "CreateTopic",
+            "Command name should be 'CreateTopic'"
         );
-        assert!(
-            found_response,
-            "CreateTopic response (status 0, TopicDetails) not found in capture"
+        println!("  - Command name: CreateTopic");
+
+        let payload_tree = iggy
+            .get("iggy.request.payload_tree")
+            .expect("Request payload_tree missing");
+
+        let stream_id_kind = payload_tree
+            .get("iggy.create_topic.req.stream_id_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Stream ID kind: {}", stream_id_kind);
+
+        let partitions = payload_tree
+            .get("iggy.create_topic.req.partitions_count")
+            .and_then(|v| v.as_str())
+            .expect("Partitions count field missing");
+        assert_eq!(
+            partitions,
+            partitions_count.to_string().as_str(),
+            "Partitions count should match"
         );
+        println!("  - Partitions count: {}", partitions_count);
+
+        let name = payload_tree
+            .get("iggy.create_topic.req.name")
+            .and_then(|v| v.as_str())
+            .expect("Topic name field missing");
+        assert_eq!(name, topic_name, "Topic name should match");
+        println!("  - Topic name: {}", topic_name);
+
+        let compression = payload_tree
+            .get("iggy.create_topic.req.compression_algorithm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Compression: {}", compression);
+
+        let expiry = payload_tree
+            .get("iggy.create_topic.req.message_expiry")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Message expiry: {}", expiry);
+
+        let max_size = payload_tree
+            .get("iggy.create_topic.req.max_topic_size")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Max topic size: {}", max_size);
+
+        // Verify CreateTopic response
+        let (idx, iggy) = iggy_packets
+            .iter()
+            .enumerate()
+            .find_map(|(idx, packet)| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let cmd_name = iggy.get("iggy.request.command_name")?.as_str()?;
+                let status = iggy.get("iggy.response.status")?.as_str()?;
+                (cmd_name == "CreateTopic" && status == "0").then_some((idx, iggy))
+            })
+            .expect("CreateTopic response (status 0, TopicDetails) not found in capture");
+
+        println!("Packet {}: ✓ CreateTopic response found", idx);
+        println!("  - Status: OK (0)");
+
+        let status_name = iggy
+            .get("iggy.response.status_name")
+            .and_then(|v| v.as_str())
+            .expect("Status name field missing");
+        assert_eq!(status_name, "OK", "Status name should be 'OK'");
+
+        let payload_tree = iggy
+            .get("iggy.response.payload_tree")
+            .expect("Response payload_tree missing");
+
+        let resp_name = payload_tree
+            .get("iggy.create_topic.resp.name")
+            .and_then(|v| v.as_str())
+            .expect("Response topic name field missing");
+        assert_eq!(resp_name, topic_name, "Response topic name should match");
+
+        let topic_id = payload_tree
+            .get("iggy.create_topic.resp.topic_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Topic ID: {}", topic_id);
+
+        let created_at = payload_tree
+            .get("iggy.create_topic.resp.created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Created At: {}", created_at);
+
+        let resp_partitions = payload_tree
+            .get("iggy.create_topic.resp.partitions_count")
+            .and_then(|v| v.as_str())
+            .expect("Response partitions count field missing");
+        assert_eq!(
+            resp_partitions,
+            partitions_count.to_string().as_str(),
+            "Response partitions count should match request"
+        );
+        println!("  - Partitions count: {}", partitions_count);
+        println!("  - Topic name: {}", topic_name);
+
+        let size = payload_tree
+            .get("iggy.create_topic.resp.size")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Size: {}", size);
+
+        let messages_count = payload_tree
+            .get("iggy.create_topic.resp.messages_count")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A");
+        println!("  - Messages count: {}", messages_count);
 
         println!("\n✓ CreateTopic dissection test passed - verified request and response");
         Ok(())
