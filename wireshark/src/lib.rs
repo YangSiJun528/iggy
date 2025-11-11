@@ -2,10 +2,12 @@
 mod tests {
     use iggy::prelude::*;
     use serde_json::Value;
+    use std::fmt::Display;
     use std::fs;
     use std::io;
     use std::path::PathBuf;
     use std::process::{Child, Command as ProcessCommand, Stdio};
+    use std::str::FromStr;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::sleep;
@@ -17,6 +19,28 @@ mod tests {
     /// Server configuration - change these constants to match your server setup
     const SERVER_IP: &str = "127.0.0.1";
     const SERVER_TCP_PORT: u16 = 8090;
+
+    /// Helper function to extract and parse iggy field values (returns Result)
+    fn get_iggy_field<T>(iggy: &Value, field: &str) -> Result<T, String>
+    where
+        T: FromStr,
+        T::Err: Display,
+    {
+        iggy.get(field)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("{} field missing", field))?
+            .parse::<T>()
+            .map_err(|e| format!("Failed to parse {}: {}", field, e))
+    }
+
+    /// Helper function to extract and parse iggy field values (panics on error)
+    fn expect_iggy_field<T>(iggy: &Value, field: &str) -> T
+    where
+        T: FromStr,
+        T::Err: Display,
+    {
+        get_iggy_field(iggy, field).unwrap_or_else(|e| panic!("{}", e))
+    }
 
     /// Helper struct to manage tshark packet capture
     struct TsharkCapture {
@@ -222,22 +246,16 @@ mod tests {
             .enumerate()
             .find_map(|(idx, packet)| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
-                let command = iggy.get("iggy.request.command")?.as_str()?;
-                (command == "1").then_some((idx, iggy))
+                let command: u32 = get_iggy_field(iggy, "iggy.request.command").ok()?;
+                (command == 1).then_some((idx, iggy))
             })
             .expect("Ping request (command 1) not found in capture");
 
-        let cmd_name = iggy
-            .get("iggy.request.command_name")
-            .and_then(|v| v.as_str())
-            .expect("Command name field missing");
+        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
         assert_eq!(cmd_name, "Ping", "Command name should be 'Ping'");
 
-        let length = iggy
-            .get("iggy.request.length")
-            .and_then(|v| v.as_str())
-            .expect("Request length field missing");
-        assert_eq!(length, "4", "Ping request length should be 4");
+        let length: u32 = expect_iggy_field(iggy, "iggy.request.length");
+        assert_eq!(length, 4, "Ping request length should be 4");
 
         // Verify Ping response
         let (_idx, iggy) = iggy_packets
@@ -245,22 +263,16 @@ mod tests {
             .enumerate()
             .find_map(|(idx, packet)| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
-                let cmd_name = iggy.get("iggy.request.command_name")?.as_str()?;
-                let status = iggy.get("iggy.response.status")?.as_str()?;
-                (cmd_name == "Ping" && status == "0").then_some((idx, iggy))
+                let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
+                let status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
+                (cmd_name == "Ping" && status == 0).then_some((idx, iggy))
             })
             .expect("Ping response (status 0, length 0) not found in capture");
 
-        let resp_length = iggy
-            .get("iggy.response.length")
-            .and_then(|v| v.as_str())
-            .expect("Response length field missing");
-        assert_eq!(resp_length, "0", "Ping response length should be 0");
+        let resp_length: u32 = expect_iggy_field(iggy, "iggy.response.length");
+        assert_eq!(resp_length, 0, "Ping response length should be 0");
 
-        let status_name = iggy
-            .get("iggy.response.status_name")
-            .and_then(|v| v.as_str())
-            .expect("Status name field missing");
+        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
         assert_eq!(status_name, "OK", "Status name should be 'OK'");
 
         Ok(())
@@ -311,25 +323,19 @@ mod tests {
             .enumerate()
             .find_map(|(idx, packet)| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
-                let command = iggy.get("iggy.request.command")?.as_str()?;
-                (command == "38").then_some((idx, iggy))
+                let command: u32 = get_iggy_field(iggy, "iggy.request.command").ok()?;
+                (command == 38).then_some((idx, iggy))
             })
             .expect("LoginUser request (command 38) not found in capture");
 
-        let cmd_name = iggy
-            .get("iggy.request.command_name")
-            .and_then(|v| v.as_str())
-            .expect("Command name field missing");
+        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
         assert_eq!(cmd_name, "LoginUser", "Command name should be 'LoginUser'");
 
         let payload_tree = iggy
             .get("iggy.request.payload_tree")
             .expect("Request payload_tree missing");
 
-        let username = payload_tree
-            .get("iggy.login_user.req.username")
-            .and_then(|v| v.as_str())
-            .expect("Username field missing");
+        let username: String = expect_iggy_field(payload_tree, "iggy.login_user.req.username");
         assert_eq!(username, DEFAULT_ROOT_USERNAME, "Username should match");
 
         // Verify LoginUser response
@@ -338,9 +344,9 @@ mod tests {
             .enumerate()
             .find_map(|(idx, packet)| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
-                let cmd_name = iggy.get("iggy.request.command_name")?.as_str()?;
-                let status = iggy.get("iggy.response.status")?.as_str()?;
-                (cmd_name == "LoginUser" && status == "0").then_some((idx, iggy))
+                let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
+                let status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
+                (cmd_name == "LoginUser" && status == 0).then_some((idx, iggy))
             })
             .expect("LoginUser response (status 0, user_id) not found in capture");
 
@@ -348,22 +354,13 @@ mod tests {
             .get("iggy.response.payload_tree")
             .expect("Response payload_tree missing");
 
-        let _user_id = payload_tree
-            .get("iggy.login_user.resp.user_id")
-            .and_then(|v| v.as_str())
-            .expect("User ID field missing");
+        let _user_id: u32 = expect_iggy_field(payload_tree, "iggy.login_user.resp.user_id");
 
-        let status_name = iggy
-            .get("iggy.response.status_name")
-            .and_then(|v| v.as_str())
-            .expect("Status name field missing");
+        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
         assert_eq!(status_name, "OK", "Status name should be 'OK'");
 
-        let length = iggy
-            .get("iggy.response.length")
-            .and_then(|v| v.as_str())
-            .expect("Response length field missing");
-        assert_eq!(length, "4", "LoginUser response length should be 4");
+        let length: u32 = expect_iggy_field(iggy, "iggy.response.length");
+        assert_eq!(length, 4, "LoginUser response length should be 4");
 
         Ok(())
     }
@@ -425,15 +422,12 @@ mod tests {
             .enumerate()
             .find_map(|(idx, packet)| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
-                let command = iggy.get("iggy.request.command")?.as_str()?;
-                (command == "302").then_some((idx, iggy))
+                let command: u32 = get_iggy_field(iggy, "iggy.request.command").ok()?;
+                (command == 302).then_some((idx, iggy))
             })
             .expect("CreateTopic request (command 302) not found in capture");
 
-        let cmd_name = iggy
-            .get("iggy.request.command_name")
-            .and_then(|v| v.as_str())
-            .expect("Command name field missing");
+        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
         assert_eq!(
             cmd_name, "CreateTopic",
             "Command name should be 'CreateTopic'"
@@ -443,20 +437,14 @@ mod tests {
             .get("iggy.request.payload_tree")
             .expect("Request payload_tree missing");
 
-        let partitions = payload_tree
-            .get("iggy.create_topic.req.partitions_count")
-            .and_then(|v| v.as_str())
-            .expect("Partitions count field missing");
+        let partitions: u32 = expect_iggy_field(payload_tree, "iggy.create_topic.req.partitions_count");
         assert_eq!(
             partitions,
-            partitions_count.to_string().as_str(),
+            partitions_count,
             "Partitions count should match"
         );
 
-        let name = payload_tree
-            .get("iggy.create_topic.req.name")
-            .and_then(|v| v.as_str())
-            .expect("Topic name field missing");
+        let name: String = expect_iggy_field(payload_tree, "iggy.create_topic.req.name");
         assert_eq!(name, topic_name, "Topic name should match");
 
         // Verify CreateTopic response
@@ -465,35 +453,26 @@ mod tests {
             .enumerate()
             .find_map(|(idx, packet)| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
-                let cmd_name = iggy.get("iggy.request.command_name")?.as_str()?;
-                let status = iggy.get("iggy.response.status")?.as_str()?;
-                (cmd_name == "CreateTopic" && status == "0").then_some((idx, iggy))
+                let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
+                let status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
+                (cmd_name == "CreateTopic" && status == 0).then_some((idx, iggy))
             })
             .expect("CreateTopic response (status 0, TopicDetails) not found in capture");
 
-        let status_name = iggy
-            .get("iggy.response.status_name")
-            .and_then(|v| v.as_str())
-            .expect("Status name field missing");
+        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
         assert_eq!(status_name, "OK", "Status name should be 'OK'");
 
         let payload_tree = iggy
             .get("iggy.response.payload_tree")
             .expect("Response payload_tree missing");
 
-        let resp_name = payload_tree
-            .get("iggy.create_topic.resp.name")
-            .and_then(|v| v.as_str())
-            .expect("Response topic name field missing");
+        let resp_name: String = expect_iggy_field(payload_tree, "iggy.create_topic.resp.name");
         assert_eq!(resp_name, topic_name, "Response topic name should match");
 
-        let resp_partitions = payload_tree
-            .get("iggy.create_topic.resp.partitions_count")
-            .and_then(|v| v.as_str())
-            .expect("Response partitions count field missing");
+        let resp_partitions: u32 = expect_iggy_field(payload_tree, "iggy.create_topic.resp.partitions_count");
         assert_eq!(
             resp_partitions,
-            partitions_count.to_string().as_str(),
+            partitions_count,
             "Response partitions count should match request"
         );
 
