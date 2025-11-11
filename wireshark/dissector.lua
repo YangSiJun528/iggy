@@ -54,57 +54,61 @@ local COMMANDS = {
 
         -- Command-specific fields
         fields = {
-            req_username_len = ProtoField.uint8("iggy.login.req.username_len", "Username Length", base.DEC),
-            req_username = ProtoField.string("iggy.login.req.username", "Username"),
-            req_password_len = ProtoField.uint8("iggy.login.req.password_len", "Password Length", base.DEC),
-            req_password = ProtoField.string("iggy.login.req.password", "Password"),
-            req_version_len = ProtoField.uint32("iggy.login.req.version_len", "Version Length", base.DEC),
-            req_version = ProtoField.string("iggy.login.req.version", "Version"),
-            req_context_len = ProtoField.uint32("iggy.login.req.context_len", "Context Length", base.DEC),
-            req_context = ProtoField.string("iggy.login.req.context", "Context"),
-            resp_user_id = ProtoField.uint32("iggy.login.resp.user_id", "User ID", base.DEC),
+            request = {
+                username_len = ProtoField.uint8("iggy.login_user.req.username_len", "Username Length", base.DEC),
+                username = ProtoField.string("iggy.login_user.req.username", "Username"),
+                password_len = ProtoField.uint8("iggy.login_user.req.password_len", "Password Length", base.DEC),
+                password = ProtoField.string("iggy.login_user.req.password", "Password"),
+                version_len = ProtoField.uint32("iggy.login_user.req.version_len", "Version Length", base.DEC),
+                version = ProtoField.string("iggy.login_user.req.version", "Version"),
+                context_len = ProtoField.uint32("iggy.login_user.req.context_len", "Context Length", base.DEC),
+                context = ProtoField.string("iggy.login_user.req.context", "Context"),
+            },
+            response = {
+                user_id = ProtoField.uint32("iggy.login_user.resp.user_id", "User ID", base.DEC),
+            },
         },
 
         request_payload_dissector = function(buffer, tree, offset)
             -- Username & Password at least 3 bytes: core/common/src/commands/users/defaults.rs
-            local f = COMMANDS[38].fields
+            local f = COMMANDS[38].fields.request
 
             -- Username (u8 length + string)
             local username_len = buffer(offset, 1):uint()
-            tree:add(f.req_username_len, buffer(offset, 1))
+            tree:add(f.username_len, buffer(offset, 1))
             offset = offset + 1
-            tree:add(f.req_username, buffer(offset, username_len))
+            tree:add(f.username, buffer(offset, username_len))
             offset = offset + username_len
 
             -- Password (u8 length + string)
             local password_len = buffer(offset, 1):uint()
-            tree:add(f.req_password_len, buffer(offset, 1))
+            tree:add(f.password_len, buffer(offset, 1))
             offset = offset + 1
-            tree:add(f.req_password, buffer(offset, password_len))
+            tree:add(f.password, buffer(offset, password_len))
             offset = offset + password_len
 
             -- Version (u32 length + string, optional)
             local version_len = buffer(offset, 4):le_uint()
-            tree:add_le(f.req_version_len, buffer(offset, 4))
+            tree:add_le(f.version_len, buffer(offset, 4))
             offset = offset + 4
             if version_len > 0 then
-                tree:add(f.req_version, buffer(offset, version_len))
+                tree:add(f.version, buffer(offset, version_len))
                 offset = offset + version_len
             end
 
             -- Context (u32 length + string, optional)
             local context_len = buffer(offset, 4):le_uint()
-            tree:add_le(f.req_context_len, buffer(offset, 4))
+            tree:add_le(f.context_len, buffer(offset, 4))
             offset = offset + 4
             if context_len > 0 then
-                tree:add(f.req_context, buffer(offset, context_len))
+                tree:add(f.context, buffer(offset, context_len))
             end
         end,
 
         response_payload_dissector = function(buffer, tree, offset)
             -- see: core/binary_protocol/src/utils/mapper.rs:455
-            local f = COMMANDS[38].fields
-            tree:add_le(f.resp_user_id, buffer(offset, 4))
+            local f = COMMANDS[38].fields.response
+            tree:add_le(f.user_id, buffer(offset, 4))
         end,
     },
 }
@@ -126,17 +130,28 @@ end
 ----------------------------------------
 local all_fields = {}
 
+-- Helper function to recursively collect ProtoField objects
+local function collect_fields(tbl, result)
+    for _, value in pairs(tbl) do
+        if type(value) == "table" then
+            -- Recursively collect from nested tables
+            collect_fields(value, result)
+        else
+            -- Assume it's a ProtoField object
+            table.insert(result, value)
+        end
+    end
+end
+
 -- Add common fields
 for _, field in pairs(common_fields) do
     table.insert(all_fields, field)
 end
 
--- Add command-specific fields
-for code, cmd in pairs(COMMANDS) do
+-- Add command-specific fields (recursively handles request/response nesting)
+for _code, cmd in pairs(COMMANDS) do
     if cmd.fields then
-        for _, field in pairs(cmd.fields) do
-            table.insert(all_fields, field)
-        end
+        collect_fields(cmd.fields, all_fields)
     end
 end
 
