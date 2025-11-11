@@ -298,64 +298,123 @@ local STATUS_CODES = {
 }
 
 ----------------------------------------
--- TCP stream tracking for request-response matching
--- Using frame number based tracking to handle Wireshark's multi-pass dissection
+-- Request-Response Tracker Module
+-- Handles request-response matching for pipelined protocols over TCP streams
+-- Uses frame numbers to support Wireshark's multi-pass dissection
 ----------------------------------------
--- Structure: [stream_id][frame_number] = { command_code = X, matched_frame = Y }
-local stream_requests = {}  -- Tracks requests: [stream_id][req_frame_num] = command_code
-local stream_responses = {} -- Tracks responses: [stream_id][resp_frame_num] = req_frame_num
-local tcp_stream_field = Field.new("tcp.stream")
-local frame_number_field = Field.new("frame.number")
+local ReqRespTracker = {}
+ReqRespTracker.__index = ReqRespTracker
 
--- Helper function to find matching request for a response
--- Searches backwards through frames to find the most recent unmatched request
-local function find_matching_request(stream_id, response_frame_num)
-    if not stream_requests[stream_id] then
+-- Constructor: Create a new request-response tracker
+-- @param stream_field: Wireshark Field object for stream identification (e.g., tcp.stream)
+-- @param frame_field: Wireshark Field object for frame number (e.g., frame.number)
+-- @return: New tracker instance
+function ReqRespTracker.new(stream_field, frame_field)
+    local self = setmetatable({}, ReqRespTracker)
+    self.stream_field = stream_field
+    self.frame_field = frame_field
+    self.requests = {}   -- [stream_id][frame_num] = request_data
+    self.responses = {}  -- [stream_id][resp_frame_num] = req_frame_num
+    return self
+end
+
+-- Record a request
+-- @param request_data: Data to associate with this request (e.g., command code)
+-- @return: true if recorded successfully, false otherwise
+function ReqRespTracker:record_request(request_data)
+    local stream = self.stream_field()
+    local frame = self.frame_field()
+
+    if not stream or not frame then
+        return false
+    end
+
+    local stream_id = stream.value
+    local frame_num = frame.value
+
+    if not self.requests[stream_id] then
+        self.requests[stream_id] = {}
+    end
+
+    self.requests[stream_id][frame_num] = request_data
+    return true
+end
+
+-- Find matching request for a response
+-- Searches backwards to find the most recent unmatched request before this response frame
+-- @return: request_data if found, nil otherwise
+function ReqRespTracker:find_request()
+    local stream = self.stream_field()
+    local frame = self.frame_field()
+
+    if not stream or not frame then
+        return nil
+    end
+
+    local stream_id = stream.value
+    local resp_frame_num = frame.value
+
+    if not self.requests[stream_id] then
         return nil
     end
 
     -- Check if we already matched this response in a previous pass
-    if stream_responses[stream_id] and stream_responses[stream_id][response_frame_num] then
-        local req_frame = stream_responses[stream_id][response_frame_num]
-        return stream_requests[stream_id][req_frame]
+    if self.responses[stream_id] and self.responses[stream_id][resp_frame_num] then
+        local req_frame = self.responses[stream_id][resp_frame_num]
+        return self.requests[stream_id][req_frame]
     end
 
     -- Find the most recent unmatched request before this response
-    local matched_req_frame = nil
-    local matched_command_code = nil
+    local best_req_frame = nil
+    local best_req_data = nil
 
-    for req_frame, command_code in pairs(stream_requests[stream_id]) do
-        if req_frame < response_frame_num then
-            -- Check if this request is already matched to another response
+    for req_frame, req_data in pairs(self.requests[stream_id]) do
+        if req_frame < resp_frame_num then
+            -- Check if this request is already matched to an earlier response
             local already_matched = false
-            if stream_responses[stream_id] then
-                for resp_frame, matched_req in pairs(stream_responses[stream_id]) do
-                    if matched_req == req_frame and resp_frame < response_frame_num then
+            if self.responses[stream_id] then
+                for other_resp_frame, matched_req_frame in pairs(self.responses[stream_id]) do
+                    if matched_req_frame == req_frame and other_resp_frame < resp_frame_num then
                         already_matched = true
                         break
                     end
                 end
             end
 
+            -- Keep the most recent unmatched request
             if not already_matched then
-                if not matched_req_frame or req_frame > matched_req_frame then
-                    matched_req_frame = req_frame
-                    matched_command_code = command_code
+                if not best_req_frame or req_frame > best_req_frame then
+                    best_req_frame = req_frame
+                    best_req_data = req_data
                 end
             end
         end
     end
 
-    -- Store the match for future passes
-    if matched_req_frame then
-        if not stream_responses[stream_id] then
-            stream_responses[stream_id] = {}
+    -- Cache the match for future passes
+    if best_req_frame then
+        if not self.responses[stream_id] then
+            self.responses[stream_id] = {}
         end
-        stream_responses[stream_id][response_frame_num] = matched_req_frame
+        self.responses[stream_id][resp_frame_num] = best_req_frame
     end
 
-    return matched_command_code
+    return best_req_data
 end
+
+-- Reset all tracking state (called on new capture)
+function ReqRespTracker:reset()
+    self.requests = {}
+    self.responses = {}
+end
+
+----------------------------------------
+-- Create tracker instance for Iggy protocol
+----------------------------------------
+local request_tracker = ReqRespTracker.new(
+    Field.new("tcp.stream"),
+    Field.new("frame.number")
+)
 
 ----------------------------------------
 -- Main dissector
@@ -442,17 +501,7 @@ function iggy.dissector(buffer, pinfo, tree)
             end
 
             -- Track request code for request-response matching
-            local tcp_stream = tcp_stream_field()
-            local frame_num = frame_number_field()
-            if tcp_stream and frame_num then
-                local stream_id = tcp_stream.value
-                local frame_number = frame_num.value
-
-                if not stream_requests[stream_id] then
-                    stream_requests[stream_id] = {}
-                end
-                stream_requests[stream_id][frame_number] = command_code
-            end
+            request_tracker:record_request(command_code)
 
             -- Update info column
             pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
@@ -473,16 +522,7 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add(cf.resp_status_name, status_name):set_generated()
 
             -- Get matching request code for this TCP stream
-            local tcp_stream = tcp_stream_field()
-            local frame_num = frame_number_field()
-            local command_code = nil
-
-            if tcp_stream and frame_num then
-                local stream_id = tcp_stream.value
-                local frame_number = frame_num.value
-                command_code = find_matching_request(stream_id, frame_number)
-            end
-
+            local command_code = request_tracker:find_request()
             local command_info = command_code and COMMANDS[command_code]
 
             -- Early return for unknown commands (no matching request or unimplemented command)
@@ -541,9 +581,8 @@ local current_port = 0
 -- Called when a capture file is opened or closed
 -- This is where we reset per-capture state
 function iggy.init()
-    -- Clear stream tracking state for new capture session
-    stream_requests = {}
-    stream_responses = {}
+    -- Clear request-response tracking state for new capture session
+    request_tracker:reset()
 end
 
 -- Called when protocol preferences are changed
