@@ -314,21 +314,38 @@ function iggy.dissector(buffer, pinfo, tree)
 end
 
 ----------------------------------------
--- Port registration management
+-- Lifecycle management
 ----------------------------------------
 local current_port = 0
 
+-- Called when a capture file is opened or closed
+-- This is where we reset per-capture state
 function iggy.init()
+    -- Clear stream tracking state for new capture session
+    stream_requests = {}
+end
+
+-- Called when protocol preferences are changed
+-- This is where we update port registration
+function iggy.prefs_changed()
     local tcp_port = DissectorTable.get("tcp.port")
 
-    -- Remove old port registration if exists
-    if current_port > 0 then
-        tcp_port:remove(current_port, iggy)
-    end
+    if current_port ~= iggy.prefs.server_port then
+        -- Remove old port registration if exists
+        if current_port > 0 then
+            tcp_port:remove(current_port, iggy)
+        end
 
-    -- Register new port
-    current_port = iggy.prefs.server_port
-    if current_port > 0 then
-        tcp_port:add(current_port, iggy)
+        -- Register new port
+        current_port = iggy.prefs.server_port
+        if current_port > 0 then
+            tcp_port:add(current_port, iggy)
+        end
     end
 end
+
+----------------------------------------
+-- Initial port registration
+----------------------------------------
+DissectorTable.get("tcp.port"):add(iggy.prefs.server_port, iggy)
+current_port = iggy.prefs.server_port
