@@ -71,8 +71,6 @@ mod tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
-            println!("Starting tshark with command: {:?}", command);
-
             command.spawn()
         }
 
@@ -96,11 +94,6 @@ mod tests {
                 ])
                 .output()?;
 
-            println!("tshark analyze exit status: {:?}", output.status);
-            if !output.stderr.is_empty() {
-                println!("tshark stderr: {}", String::from_utf8_lossy(&output.stderr));
-            }
-
             if !output.status.success() {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -109,15 +102,12 @@ mod tests {
             }
 
             let json_str = String::from_utf8_lossy(&output.stdout);
-            println!("tshark output length: {} bytes", json_str.len());
 
             if json_str.trim().is_empty() {
                 return Ok(Vec::new());
             }
 
             let packets: Vec<Value> = serde_json::from_str(&json_str).map_err(|e| {
-                println!("JSON parse error: {}", e);
-                println!("Raw output: {}", json_str);
                 io::Error::new(io::ErrorKind::Other, e)
             })?;
 
@@ -199,8 +189,6 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n=== Testing Ping (Command 1) Dissection ===");
-
         // Start packet capture
         let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
         let mut tshark = capture.start()?;
@@ -209,7 +197,6 @@ mod tests {
         // Create client (this will also send login, which is fine)
         let client = create_test_client().await?;
 
-        println!("Sending Ping command...");
         client.ping().await?;
 
         // Wait for packets to be captured
@@ -222,9 +209,6 @@ mod tests {
         let packets = capture.analyze()?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        println!("Total packets captured: {}", packets.len());
-        println!("Iggy packets found: {}", iggy_packets.len());
-
         // Print packet JSON for debugging
         print_packet_json(&packets, false);
 
@@ -233,7 +217,7 @@ mod tests {
         }
 
         // Verify Ping request
-        let (idx, iggy) = iggy_packets
+        let (_idx, iggy) = iggy_packets
             .iter()
             .enumerate()
             .find_map(|(idx, packet)| {
@@ -243,24 +227,20 @@ mod tests {
             })
             .expect("Ping request (command 1) not found in capture");
 
-        println!("Packet {}: ✓ Ping request found", idx);
-
         let cmd_name = iggy
             .get("iggy.request.command_name")
             .and_then(|v| v.as_str())
             .expect("Command name field missing");
         assert_eq!(cmd_name, "Ping", "Command name should be 'Ping'");
-        println!("  - Command name: Ping");
 
         let length = iggy
             .get("iggy.request.length")
             .and_then(|v| v.as_str())
             .expect("Request length field missing");
         assert_eq!(length, "4", "Ping request length should be 4");
-        println!("  - Request length: 4");
 
         // Verify Ping response
-        let (idx, iggy) = iggy_packets
+        let (_idx, iggy) = iggy_packets
             .iter()
             .enumerate()
             .find_map(|(idx, packet)| {
@@ -271,15 +251,11 @@ mod tests {
             })
             .expect("Ping response (status 0, length 0) not found in capture");
 
-        println!("Packet {}: ✓ Ping response found", idx);
-        println!("  - Status: OK (0)");
-
         let resp_length = iggy
             .get("iggy.response.length")
             .and_then(|v| v.as_str())
             .expect("Response length field missing");
         assert_eq!(resp_length, "0", "Ping response length should be 0");
-        println!("  - Response length: 0");
 
         let status_name = iggy
             .get("iggy.response.status_name")
@@ -287,15 +263,12 @@ mod tests {
             .expect("Status name field missing");
         assert_eq!(status_name, "OK", "Status name should be 'OK'");
 
-        println!("\n✓ Ping dissection test passed - verified request and response");
         Ok(())
     }
 
     #[tokio::test]
     #[ignore]
     async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n=== Testing LoginUser (Command 38) Dissection ===");
-
         // Start packet capture
         let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
         let mut tshark = capture.start()?;
@@ -311,11 +284,9 @@ mod tests {
         let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
         client.connect().await?;
 
-        println!("Sending LoginUser command...");
         client
             .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
             .await?;
-        println!("Login successful");
 
         // Wait for packets to be captured
         sleep(Duration::from_secs(2)).await;
@@ -327,9 +298,6 @@ mod tests {
         let packets = capture.analyze()?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        println!("Total packets captured: {}", packets.len());
-        println!("Iggy packets found: {}", iggy_packets.len());
-
         // Print packet JSON for debugging
         print_packet_json(&packets, false);
 
@@ -338,7 +306,7 @@ mod tests {
         }
 
         // Verify LoginUser request
-        let (idx, iggy) = iggy_packets
+        let (_idx, iggy) = iggy_packets
             .iter()
             .enumerate()
             .find_map(|(idx, packet)| {
@@ -348,36 +316,20 @@ mod tests {
             })
             .expect("LoginUser request (command 38) not found in capture");
 
-        println!("Packet {}: ✓ LoginUser request found", idx);
-
         let cmd_name = iggy
             .get("iggy.request.command_name")
             .and_then(|v| v.as_str())
             .expect("Command name field missing");
         assert_eq!(cmd_name, "LoginUser", "Command name should be 'LoginUser'");
-        println!("  - Command name: LoginUser");
 
         let username = iggy
             .get("iggy.login_user.req.username")
             .and_then(|v| v.as_str())
             .expect("Username field missing");
         assert_eq!(username, DEFAULT_ROOT_USERNAME, "Username should match");
-        println!("  - Username: {}", DEFAULT_ROOT_USERNAME);
-
-        let username_len = iggy
-            .get("iggy.login_user.req.username_len")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Username length: {}", username_len);
-
-        let password_len = iggy
-            .get("iggy.login_user.req.password_len")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Password length: {}", password_len);
 
         // Verify LoginUser response
-        let (idx, iggy) = iggy_packets
+        let (_idx, iggy) = iggy_packets
             .iter()
             .enumerate()
             .find_map(|(idx, packet)| {
@@ -388,18 +340,14 @@ mod tests {
             })
             .expect("LoginUser response (status 0, user_id) not found in capture");
 
-        println!("Packet {}: ✓ LoginUser response found", idx);
-        println!("  - Status: OK (0)");
-
         let payload_tree = iggy
             .get("iggy.response.payload_tree")
             .expect("Response payload_tree missing");
 
-        let user_id = payload_tree
+        let _user_id = payload_tree
             .get("iggy.login_user.resp.user_id")
             .and_then(|v| v.as_str())
             .expect("User ID field missing");
-        println!("  - User ID: {}", user_id);
 
         let status_name = iggy
             .get("iggy.response.status_name")
@@ -412,9 +360,7 @@ mod tests {
             .and_then(|v| v.as_str())
             .expect("Response length field missing");
         assert_eq!(length, "4", "LoginUser response length should be 4");
-        println!("  - Response length: 4");
 
-        println!("\n✓ LoginUser dissection test passed - verified request and response");
         Ok(())
     }
 
@@ -422,8 +368,6 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n=== Testing CreateTopic (Command 302) Dissection ===");
-
         // Start packet capture
         let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
         let mut tshark = capture.start()?;
@@ -435,16 +379,11 @@ mod tests {
         // Create a test stream first
         let stream_id = 1u32;
         let stream_name = "test_stream";
-        println!("Creating test stream: {}", stream_name);
         client.create_stream(stream_name, Some(stream_id)).await?;
 
         // Create a topic
         let topic_name = "test_topic";
         let partitions_count = 3u32;
-        println!("Sending CreateTopic command...");
-        println!("  - Stream ID: {}", stream_id);
-        println!("  - Topic name: {}", topic_name);
-        println!("  - Partitions: {}", partitions_count);
 
         client
             .create_topic(
@@ -458,7 +397,6 @@ mod tests {
                 MaxTopicSize::ServerDefault,
             )
             .await?;
-        println!("CreateTopic successful");
 
         // Wait for packets to be captured
         sleep(Duration::from_secs(2)).await;
@@ -470,9 +408,6 @@ mod tests {
         let packets = capture.analyze()?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        println!("Total packets captured: {}", packets.len());
-        println!("Iggy packets found: {}", iggy_packets.len());
-
         // Print packet JSON for debugging
         print_packet_json(&packets, false);
 
@@ -481,7 +416,7 @@ mod tests {
         }
 
         // Verify CreateTopic request
-        let (idx, iggy) = iggy_packets
+        let (_idx, iggy) = iggy_packets
             .iter()
             .enumerate()
             .find_map(|(idx, packet)| {
@@ -491,8 +426,6 @@ mod tests {
             })
             .expect("CreateTopic request (command 302) not found in capture");
 
-        println!("Packet {}: ✓ CreateTopic request found", idx);
-
         let cmd_name = iggy
             .get("iggy.request.command_name")
             .and_then(|v| v.as_str())
@@ -501,17 +434,10 @@ mod tests {
             cmd_name, "CreateTopic",
             "Command name should be 'CreateTopic'"
         );
-        println!("  - Command name: CreateTopic");
 
         let payload_tree = iggy
             .get("iggy.request.payload_tree")
             .expect("Request payload_tree missing");
-
-        let stream_id_kind = payload_tree
-            .get("iggy.create_topic.req.stream_id_kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Stream ID kind: {}", stream_id_kind);
 
         let partitions = payload_tree
             .get("iggy.create_topic.req.partitions_count")
@@ -522,35 +448,15 @@ mod tests {
             partitions_count.to_string().as_str(),
             "Partitions count should match"
         );
-        println!("  - Partitions count: {}", partitions_count);
 
         let name = payload_tree
             .get("iggy.create_topic.req.name")
             .and_then(|v| v.as_str())
             .expect("Topic name field missing");
         assert_eq!(name, topic_name, "Topic name should match");
-        println!("  - Topic name: {}", topic_name);
-
-        let compression = payload_tree
-            .get("iggy.create_topic.req.compression_algorithm")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Compression: {}", compression);
-
-        let expiry = payload_tree
-            .get("iggy.create_topic.req.message_expiry")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Message expiry: {}", expiry);
-
-        let max_size = payload_tree
-            .get("iggy.create_topic.req.max_topic_size")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Max topic size: {}", max_size);
 
         // Verify CreateTopic response
-        let (idx, iggy) = iggy_packets
+        let (_idx, iggy) = iggy_packets
             .iter()
             .enumerate()
             .find_map(|(idx, packet)| {
@@ -560,9 +466,6 @@ mod tests {
                 (cmd_name == "CreateTopic" && status == "0").then_some((idx, iggy))
             })
             .expect("CreateTopic response (status 0, TopicDetails) not found in capture");
-
-        println!("Packet {}: ✓ CreateTopic response found", idx);
-        println!("  - Status: OK (0)");
 
         let status_name = iggy
             .get("iggy.response.status_name")
@@ -580,18 +483,6 @@ mod tests {
             .expect("Response topic name field missing");
         assert_eq!(resp_name, topic_name, "Response topic name should match");
 
-        let topic_id = payload_tree
-            .get("iggy.create_topic.resp.topic_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Topic ID: {}", topic_id);
-
-        let created_at = payload_tree
-            .get("iggy.create_topic.resp.created_at")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Created At: {}", created_at);
-
         let resp_partitions = payload_tree
             .get("iggy.create_topic.resp.partitions_count")
             .and_then(|v| v.as_str())
@@ -601,22 +492,7 @@ mod tests {
             partitions_count.to_string().as_str(),
             "Response partitions count should match request"
         );
-        println!("  - Partitions count: {}", partitions_count);
-        println!("  - Topic name: {}", topic_name);
 
-        let size = payload_tree
-            .get("iggy.create_topic.resp.size")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Size: {}", size);
-
-        let messages_count = payload_tree
-            .get("iggy.create_topic.resp.messages_count")
-            .and_then(|v| v.as_str())
-            .unwrap_or("N/A");
-        println!("  - Messages count: {}", messages_count);
-
-        println!("\n✓ CreateTopic dissection test passed - verified request and response");
         Ok(())
     }
 }
