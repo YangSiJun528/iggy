@@ -43,10 +43,10 @@ local COMMANDS = {
     [1] = {
         name = "Ping",
         fields = { request = {}, response = {},},
-        request_payload_dissector = function(buffer, tree, offset)
+        request_payload_dissector = function(self, buffer, tree, offset)
             -- No request payload
         end,
-        response_payload_dissector = function(buffer, tree, offset)
+        response_payload_dissector = function(self, buffer, tree, offset)
             -- No response payload
         end,
     },
@@ -67,9 +67,9 @@ local COMMANDS = {
                 user_id = ProtoField.uint32("iggy.login_user.resp.user_id", "User ID", base.DEC),
             },
         },
-        request_payload_dissector = function(buffer, tree, offset)
+        request_payload_dissector = function(self, buffer, tree, offset)
             -- Username & Password at least 3 bytes: core/common/src/commands/users/defaults.rs
-            local f = COMMANDS[38].fields.request
+            local f = self.fields.request
 
             -- Username (u8 length + string)
             local username_len = buffer(offset, 1):uint()
@@ -102,9 +102,9 @@ local COMMANDS = {
                 tree:add(f.context, buffer(offset, context_len))
             end
         end,
-        response_payload_dissector = function(buffer, tree, offset)
+        response_payload_dissector = function(self, buffer, tree, offset)
             -- see: core/binary_protocol/src/utils/mapper.rs:455
-            local f = COMMANDS[38].fields.response
+            local f = self.fields.response
             tree:add_le(f.user_id, buffer(offset, 4))
         end,
     },
@@ -138,9 +138,9 @@ local COMMANDS = {
                 name = ProtoField.string("iggy.create_topic.resp.name", "Name"),
             },
         },
-        request_payload_dissector = function(buffer, tree, offset)
+        request_payload_dissector = function(self, buffer, tree, offset)
             -- core/common/src/commands/topics/create_topic.rs:114
-            local f = COMMANDS[302].fields.request
+            local f = self.fields.request
 
             -- Stream ID (Identifier: kind + length + value)
             local stream_id_kind = buffer(offset, 1):uint()
@@ -184,9 +184,9 @@ local COMMANDS = {
             offset = offset + 1
             tree:add(f.name, buffer(offset, name_len))
         end,
-        response_payload_dissector = function(buffer, tree, offset)
+        response_payload_dissector = function(self, buffer, tree, offset)
             -- core/binary_protocol/src/utils/mapper.rs:638
-            local f = COMMANDS[302].fields.response
+            local f = self.fields.response
 
             -- Topic ID (u32 le)
             tree:add_le(f.topic_id, buffer(offset, 4))
@@ -384,7 +384,7 @@ function iggy.dissector(buffer, pinfo, tree)
             -- Payload
             if payload_len > 0 then
                 local payload_tree = subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
-                command_info.request_payload_dissector(buffer, payload_tree, payload_offset)
+                command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
             end
 
             -- Track request code for request-response matching
@@ -439,7 +439,7 @@ function iggy.dissector(buffer, pinfo, tree)
             -- Payload (only for status_code is 0(OK))
             if payload_len > 0 and status_code == 0 then
                 local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
-                command_info.response_payload_dissector(buffer, payload_tree, payload_offset)
+                command_info.response_payload_dissector(command_info, buffer, payload_tree, payload_offset)
             end
 
             -- Update info column
