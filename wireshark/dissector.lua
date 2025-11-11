@@ -299,24 +299,62 @@ local STATUS_CODES = {
 
 ----------------------------------------
 -- TCP stream tracking for request-response matching
--- Using queue to support pipelining (request1, request2, response1, response2)
+-- Using frame number based tracking to handle Wireshark's multi-pass dissection
 ----------------------------------------
-local stream_requests = {}  -- [stream_id] = { queue of command_codes }
+-- Structure: [stream_id][frame_number] = { command_code = X, matched_frame = Y }
+local stream_requests = {}  -- Tracks requests: [stream_id][req_frame_num] = command_code
+local stream_responses = {} -- Tracks responses: [stream_id][resp_frame_num] = req_frame_num
 local tcp_stream_field = Field.new("tcp.stream")
+local frame_number_field = Field.new("frame.number")
 
--- Helper functions for queue operations
-local function queue_push(stream_id, command_code)
+-- Helper function to find matching request for a response
+-- Searches backwards through frames to find the most recent unmatched request
+local function find_matching_request(stream_id, response_frame_num)
     if not stream_requests[stream_id] then
-        stream_requests[stream_id] = {}
-    end
-    table.insert(stream_requests[stream_id], command_code)
-end
-
-local function queue_pop(stream_id)
-    if not stream_requests[stream_id] or #stream_requests[stream_id] == 0 then
         return nil
     end
-    return table.remove(stream_requests[stream_id], 1)
+
+    -- Check if we already matched this response in a previous pass
+    if stream_responses[stream_id] and stream_responses[stream_id][response_frame_num] then
+        local req_frame = stream_responses[stream_id][response_frame_num]
+        return stream_requests[stream_id][req_frame]
+    end
+
+    -- Find the most recent unmatched request before this response
+    local matched_req_frame = nil
+    local matched_command_code = nil
+
+    for req_frame, command_code in pairs(stream_requests[stream_id]) do
+        if req_frame < response_frame_num then
+            -- Check if this request is already matched to another response
+            local already_matched = false
+            if stream_responses[stream_id] then
+                for resp_frame, matched_req in pairs(stream_responses[stream_id]) do
+                    if matched_req == req_frame and resp_frame < response_frame_num then
+                        already_matched = true
+                        break
+                    end
+                end
+            end
+
+            if not already_matched then
+                if not matched_req_frame or req_frame > matched_req_frame then
+                    matched_req_frame = req_frame
+                    matched_command_code = command_code
+                end
+            end
+        end
+    end
+
+    -- Store the match for future passes
+    if matched_req_frame then
+        if not stream_responses[stream_id] then
+            stream_responses[stream_id] = {}
+        end
+        stream_responses[stream_id][response_frame_num] = matched_req_frame
+    end
+
+    return matched_command_code
 end
 
 ----------------------------------------
@@ -403,10 +441,17 @@ function iggy.dissector(buffer, pinfo, tree)
                 command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
             end
 
-            -- Track request code for request-response matching (enqueue)
+            -- Track request code for request-response matching
             local tcp_stream = tcp_stream_field()
-            if tcp_stream then
-                queue_push(tcp_stream.value, command_code)
+            local frame_num = frame_number_field()
+            if tcp_stream and frame_num then
+                local stream_id = tcp_stream.value
+                local frame_number = frame_num.value
+
+                if not stream_requests[stream_id] then
+                    stream_requests[stream_id] = {}
+                end
+                stream_requests[stream_id][frame_number] = command_code
             end
 
             -- Update info column
@@ -427,9 +472,17 @@ function iggy.dissector(buffer, pinfo, tree)
             local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
             subtree:add(cf.resp_status_name, status_name):set_generated()
 
-            -- Get matching request code for this TCP stream (dequeue)
+            -- Get matching request code for this TCP stream
             local tcp_stream = tcp_stream_field()
-            local command_code = tcp_stream and queue_pop(tcp_stream.value)
+            local frame_num = frame_number_field()
+            local command_code = nil
+
+            if tcp_stream and frame_num then
+                local stream_id = tcp_stream.value
+                local frame_number = frame_num.value
+                command_code = find_matching_request(stream_id, frame_number)
+            end
+
             local command_info = command_code and COMMANDS[command_code]
 
             -- Early return for unknown commands (no matching request or unimplemented command)
@@ -490,6 +543,7 @@ local current_port = 0
 function iggy.init()
     -- Clear stream tracking state for new capture session
     stream_requests = {}
+    stream_responses = {}
 end
 
 -- Called when protocol preferences are changed
