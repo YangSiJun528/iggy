@@ -50,6 +50,10 @@ mod tests {
         }
 
         fn start(&self) -> io::Result<Child> {
+            let lua_script_arg = format!("lua_script:{}", self.dissector_path.display());
+            let port_config_arg = format!("iggy.server_port:{}", self.port);
+            let filter_arg = format!("tcp and host {} and port {}", self.ip, self.port);
+
             let mut command = ProcessCommand::new("tshark");
 
             command
@@ -59,16 +63,14 @@ mod tests {
                     "-w",
                     self.pcap_file.to_str().unwrap(),
                     "-f",
-                    &format!("tcp and host {} and port {}", self.ip, self.port),
+                    &filter_arg,
+                    "-X",
+                    &lua_script_arg,
+                    "-o",
+                    &port_config_arg,
                 ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-
-            // Add Lua script and port configuration
-            command.arg("-X");
-            command.arg(format!("lua_script:{}", self.dissector_path.display()));
-            command.arg("-o");
-            command.arg(format!("iggy.server_port:{}", self.port));
 
             println!("Starting tshark with command: {:?}", command);
 
@@ -76,6 +78,9 @@ mod tests {
         }
 
         fn analyze(&self) -> io::Result<Vec<Value>> {
+            let lua_script_arg = format!("lua_script:{}", self.dissector_path.display());
+            let port_config_arg = format!("iggy.server_port:{}", self.port);
+
             let output = ProcessCommand::new("tshark")
                 .args([
                     "-r",
@@ -85,9 +90,9 @@ mod tests {
                     "-T",
                     "json",
                     "-X",
-                    &format!("lua_script:{}", self.dissector_path.display()),
+                    &lua_script_arg,
                     "-o",
-                    &format!("iggy.server_port:{}", self.port),
+                    &port_config_arg,
                     "-V", // Verbose output
                 ])
                 .output()?;
