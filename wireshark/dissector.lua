@@ -300,18 +300,29 @@ local STATUS_CODES = {
 
 ----------------------------------------
 -- TCP stream tracking for request-response matching
--- Using TCP sequence numbers for robust matching that works regardless of packet processing order
+-- Using queue to support pipelining (request1, request2, response1, response2)
 -- Note: Wireshark may process packets multiple times (pinfo.visited) and out of order
+-- so we use packet numbers to cache command codes across visits
 ----------------------------------------
 local packet_request_codes = {}   -- [packet_number] = command_code (for request packets)
 local packet_response_codes = {}  -- [packet_number] = command_code (for response packets, matched from requests)
--- New: Track requests by stream+seq for out-of-order processing
--- [stream_id][tcp_seq_end] = {packet_num=N, command_code=C}
-local stream_requests = {}
+local stream_request_queues = {}  -- [stream_id] = { queue of packet_numbers } (temporary, for first pass)
 local tcp_stream_field = Field.new("tcp.stream")
-local tcp_seq_field = Field.new("tcp.seq")
-local tcp_ack_field = Field.new("tcp.ack")
-local tcp_len_field = Field.new("tcp.len")
+
+-- Helper functions for queue operations
+local function queue_push(stream_id, packet_num)
+    if not stream_request_queues[stream_id] then
+        stream_request_queues[stream_id] = {}
+    end
+    table.insert(stream_request_queues[stream_id], packet_num)
+end
+
+local function queue_pop(stream_id)
+    if not stream_request_queues[stream_id] or #stream_request_queues[stream_id] == 0 then
+        return nil
+    end
+    return table.remove(stream_request_queues[stream_id], 1)
+end
 
 ----------------------------------------
 -- Main dissector
@@ -373,31 +384,17 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add_le(cf.req_length, buffer(0, 4))
             subtree:add_le(cf.req_command, buffer(4, 4))
 
-            -- Track request code for request-response matching
+            -- Track request code for request-response matching (enqueue)
             -- This must be done BEFORE checking if command is known, so responses can be matched
             -- Only update state on first visit to avoid duplicates
             if not pinfo.visited then
                 -- Store command_code for this request packet
                 packet_request_codes[pinfo.number] = command_code
 
-                -- Track by TCP stream + sequence number for out-of-order matching
+                -- Enqueue this request packet number for matching with response
                 local tcp_stream = tcp_stream_field()
-                local tcp_seq = tcp_seq_field()
-                local tcp_len = tcp_len_field()
-
-                if tcp_stream and tcp_seq and tcp_len then
-                    local stream_id = tcp_stream.value
-                    local seq_end = tcp_seq.value + tcp_len.value
-
-                    if not stream_requests[stream_id] then
-                        stream_requests[stream_id] = {}
-                    end
-
-                    -- Store request info by the TCP seq number that response will ACK
-                    stream_requests[stream_id][seq_end] = {
-                        packet_num = pinfo.number,
-                        command_code = command_code
-                    }
+                if tcp_stream then
+                    queue_push(tcp_stream.value, pinfo.number)
                 end
             end
 
@@ -443,32 +440,20 @@ function iggy.dissector(buffer, pinfo, tree)
             local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
             subtree:add(cf.resp_status_name, status_name):set_generated()
 
-            -- Get matching request code for this TCP stream
-            -- Match by TCP ACK number (response ACKs the request's seq+len)
-            -- Works regardless of packet processing order
+            -- Get matching request code for this TCP stream (dequeue)
+            -- On first visit: pop request packet number from queue and look up its command_code
+            -- On revisit: use cached value
             local command_code
             if not pinfo.visited then
                 local tcp_stream = tcp_stream_field()
-                local tcp_ack = tcp_ack_field()
-
-                if tcp_stream and tcp_ack then
-                    local stream_id = tcp_stream.value
-                    local ack_num = tcp_ack.value
-
-                    -- Look up request by the seq number this response is ACKing
-                    if stream_requests[stream_id] and stream_requests[stream_id][ack_num] then
-                        local request_info = stream_requests[stream_id][ack_num]
-                        command_code = request_info.command_code
-                        packet_response_codes[pinfo.number] = command_code
-                    else
-                        -- No matching request found
-                        -- This can happen if: capture started mid-stream, or packet loss
-                    end
+                local request_packet_num = tcp_stream and queue_pop(tcp_stream.value)
+                if request_packet_num then
+                    command_code = packet_request_codes[request_packet_num]
+                    packet_response_codes[pinfo.number] = command_code
                 else
-                    -- TCP fields not available
+                    -- No matching request found (queue empty)
                 end
             else
-                -- On revisit: use cached value
                 command_code = packet_response_codes[pinfo.number]
             end
 
@@ -545,7 +530,7 @@ function iggy.init()
     -- Clear stream tracking state for new capture session
     packet_request_codes = {}
     packet_response_codes = {}
-    stream_requests = {}
+    stream_request_queues = {}
 end
 
 -- Called when protocol preferences are changed
