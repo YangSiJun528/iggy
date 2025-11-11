@@ -5,7 +5,8 @@ local iggy = Proto("iggy", "Iggy Protocol")
 ----------------------------------------
 -- Preferences
 ----------------------------------------
-iggy.prefs.server_port = Pref.uint("Server Port", 8090, "Target TCP server port")
+iggy.prefs.tcp_port = Pref.uint("TCP Port", 8090, "Target TCP server port")
+iggy.prefs.quic_port = Pref.uint("QUIC Port", 8080, "Target QUIC server port")
 
 ----------------------------------------
 -- Expert Info
@@ -398,9 +399,10 @@ function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
 
     local buflen = buffer:len()
-    local server_port = iggy.prefs.server_port
-    local is_request = (pinfo.dst_port == server_port)
-    local is_response = (pinfo.src_port == server_port)
+    local tcp_port = iggy.prefs.tcp_port
+    local quic_port = iggy.prefs.quic_port
+    local is_request = (pinfo.dst_port == tcp_port or pinfo.dst_port == quic_port)
+    local is_response = (pinfo.src_port == tcp_port or pinfo.src_port == quic_port)
     local cf = common_fields -- Shorthand for common fields
 
     ----------------------------------------
@@ -551,23 +553,40 @@ end
 ----------------------------------------
 -- Lifecycle management
 ----------------------------------------
-local current_port = 0
+local current_tcp_port = 0
+local current_quic_port = 0
 
 -- Called when protocol preferences are changed
 -- This is where we update port registration
 function iggy.prefs_changed()
-    local tcp_port = DissectorTable.get("tcp.port")
+    local tcp_dissector_table = DissectorTable.get("tcp.port")
+    local udp_dissector_table = DissectorTable.get("udp.port")
 
-    if current_port ~= iggy.prefs.server_port then
+    -- Update TCP port registration
+    if current_tcp_port ~= iggy.prefs.tcp_port then
         -- Remove old port registration if exists
-        if current_port > 0 then
-            tcp_port:remove(current_port, iggy)
+        if current_tcp_port > 0 then
+            tcp_dissector_table:remove(current_tcp_port, iggy)
         end
 
         -- Register new port
-        current_port = iggy.prefs.server_port
-        if current_port > 0 then
-            tcp_port:add(current_port, iggy)
+        current_tcp_port = iggy.prefs.tcp_port
+        if current_tcp_port > 0 then
+            tcp_dissector_table:add(current_tcp_port, iggy)
+        end
+    end
+
+    -- Update QUIC (UDP) port registration
+    if current_quic_port ~= iggy.prefs.quic_port then
+        -- Remove old port registration if exists
+        if current_quic_port > 0 then
+            udp_dissector_table:remove(current_quic_port, iggy)
+        end
+
+        -- Register new port
+        current_quic_port = iggy.prefs.quic_port
+        if current_quic_port > 0 then
+            udp_dissector_table:add(current_quic_port, iggy)
         end
     end
 end
@@ -575,5 +594,11 @@ end
 ----------------------------------------
 -- Initial port registration
 ----------------------------------------
-DissectorTable.get("tcp.port"):add(iggy.prefs.server_port, iggy)
-current_port = iggy.prefs.server_port
+-- Register for TCP
+DissectorTable.get("tcp.port"):add(iggy.prefs.tcp_port, iggy)
+current_tcp_port = iggy.prefs.tcp_port
+
+-- Register for QUIC (UDP port)
+-- When QUIC decrypts stream data, it will be passed to this dissector
+DissectorTable.get("udp.port"):add(iggy.prefs.quic_port, iggy)
+current_quic_port = iggy.prefs.quic_port
