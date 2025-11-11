@@ -322,21 +322,29 @@ function ReqRespTracker:record_request(pinfo, request_data)
     if not pinfo.conversation then
         return false
     end
-    -- 1. pinfo.conversation 획득 (Wireshark가 자동 제공)
+
     local conv = pinfo.conversation
-    -- 2. conv[iggy] 에서 기존 데이터 로드 없으면 새로 초기화
-    local conv_data = conv[self.proto] or { requests = {}, matched = {} }
+    local conv_data = conv[self.proto]
 
-    -- 3. 요청 정보 저장
-    conv_data.requests[pinfo.number] = request_data
-    -- 4. 업데이트된 데이터 다시 저장
+    if not conv_data then
+        conv_data = {
+            queue = {first = 0, last = -1},  -- FIFO queue
+            matched = {}  -- [resp_frame_num] = request_data (cache)
+        }
+    end
+
+    -- Only enqueue on first pass
+    if not pinfo.visited then
+        local last = conv_data.queue.last + 1
+        conv_data.queue.last = last
+        conv_data.queue[last] = request_data
+    end
+
     conv[self.proto] = conv_data
-
     return true
 end
 
 -- Find matching request for a response
--- Searches backwards to find the most recent unmatched request before this response frame
 -- @param pinfo: Wireshark packet info object
 -- @return: request_data if found, nil otherwise
 function ReqRespTracker:find_request(pinfo)
@@ -344,55 +352,42 @@ function ReqRespTracker:find_request(pinfo)
         return nil
     end
 
-    -- 1. pinfo.conversation 획득 (Wireshark가 자동 제공)
     local conv = pinfo.conversation
     local conv_data = conv[self.proto]
 
-    if not conv_data or not conv_data.requests then
+    if not conv_data then
         return nil
     end
 
     local resp_frame_num = pinfo.number
 
-    -- 2. 캐시 확인
+    -- Check cache
     if conv_data.matched[resp_frame_num] then
-        -- 있으면 즉시 반환
-        return conv_data.requests[conv_data.matched[resp_frame_num]]
+        return conv_data.matched[resp_frame_num]
     end
 
-    local best_req_frame = nil
-    local best_req_data = nil
+    -- Dequeue on first pass
+    if not pinfo.visited then
+        local queue = conv_data.queue
+        local first = queue.first
 
-    -- 3. 역방향 검색 (최근에 온 요청 순으로)
-    for req_frame, req_data in pairs(conv_data.requests) do
-        -- 현재(응답) 프레임보다 이전 시점이여야 함
-        if req_frame < resp_frame_num then
-            local already_matched = false
-            -- 이미 매칭 된 상태인지 확인
-            for _, matched_req_frame in pairs(conv_data.matched) do
-                if matched_req_frame == req_frame then
-                    already_matched = true
-                    break
-                end
-            end
-
-            -- 매칭 안 된 요청 중 가장 큰 프레임 번호(가장 최근)를 선택
-            if not already_matched then
-                if not best_req_frame or req_frame > best_req_frame then
-                    best_req_frame = req_frame
-                    best_req_data = req_data
-                end
-            end
+        if first > queue.last then
+            return nil  -- Queue empty
         end
-    end
 
-    -- 4. 매칭 결과 캐싱 후 반환
-    if best_req_frame then
-        conv_data.matched[resp_frame_num] = best_req_frame
+        local request_data = queue[first]
+        queue[first] = nil  -- Allow garbage collection
+        queue.first = first + 1
+
+        -- Cache the result
+        conv_data.matched[resp_frame_num] = request_data
         conv[self.proto] = conv_data
-    end
 
-    return best_req_data
+        return request_data
+    else
+        -- Subsequent passes: use cache only
+        return conv_data.matched[resp_frame_num]
+    end
 end
 ----------------------------------------
 -- Create tracker instance for Iggy protocol
