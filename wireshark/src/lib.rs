@@ -252,10 +252,10 @@ mod tests {
             .expect("Ping request (command 1) not found in capture");
 
         let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
-        assert_eq!(cmd_name, "Ping", "Command name should be 'Ping'");
+        assert_eq!(cmd_name, "Ping");
 
         let length: u32 = expect_iggy_field(iggy, "iggy.request.length");
-        assert_eq!(length, 4, "Ping request length should be 4");
+        assert_eq!(length, 4);
 
         // Verify Ping response
         let (_idx, iggy) = iggy_packets
@@ -270,10 +270,10 @@ mod tests {
             .expect("Ping response (status 0, length 0) not found in capture");
 
         let resp_length: u32 = expect_iggy_field(iggy, "iggy.response.length");
-        assert_eq!(resp_length, 0, "Ping response length should be 0");
+        assert_eq!(resp_length, 0);
 
         let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
-        assert_eq!(status_name, "OK", "Status name should be 'OK'");
+        assert_eq!(status_name, "OK");
 
         Ok(())
     }
@@ -329,14 +329,14 @@ mod tests {
             .expect("LoginUser request (command 38) not found in capture");
 
         let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
-        assert_eq!(cmd_name, "LoginUser", "Command name should be 'LoginUser'");
+        assert_eq!(cmd_name, "LoginUser");
 
         let payload_tree = iggy
             .get("iggy.request.payload_tree")
             .expect("Request payload_tree missing");
 
         let username: String = expect_iggy_field(payload_tree, "iggy.login_user.req.username");
-        assert_eq!(username, DEFAULT_ROOT_USERNAME, "Username should match");
+        assert_eq!(username, DEFAULT_ROOT_USERNAME);
 
         // Verify LoginUser response
         let (_idx, iggy) = iggy_packets
@@ -357,10 +357,10 @@ mod tests {
         let _user_id: u32 = expect_iggy_field(payload_tree, "iggy.login_user.resp.user_id");
 
         let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
-        assert_eq!(status_name, "OK", "Status name should be 'OK'");
+        assert_eq!(status_name, "OK");
 
         let length: u32 = expect_iggy_field(iggy, "iggy.response.length");
-        assert_eq!(length, 4, "LoginUser response length should be 4");
+        assert_eq!(length, 4);
 
         Ok(())
     }
@@ -428,24 +428,17 @@ mod tests {
             .expect("CreateTopic request (command 302) not found in capture");
 
         let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
-        assert_eq!(
-            cmd_name, "CreateTopic",
-            "Command name should be 'CreateTopic'"
-        );
+        assert_eq!(cmd_name, "CreateTopic");
 
         let payload_tree = iggy
             .get("iggy.request.payload_tree")
             .expect("Request payload_tree missing");
 
         let partitions: u32 = expect_iggy_field(payload_tree, "iggy.create_topic.req.partitions_count");
-        assert_eq!(
-            partitions,
-            partitions_count,
-            "Partitions count should match"
-        );
+        assert_eq!(partitions, partitions_count);
 
         let name: String = expect_iggy_field(payload_tree, "iggy.create_topic.req.name");
-        assert_eq!(name, topic_name, "Topic name should match");
+        assert_eq!(name, topic_name);
 
         // Verify CreateTopic response
         let (_idx, iggy) = iggy_packets
@@ -460,21 +453,17 @@ mod tests {
             .expect("CreateTopic response (status 0, TopicDetails) not found in capture");
 
         let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
-        assert_eq!(status_name, "OK", "Status name should be 'OK'");
+        assert_eq!(status_name, "OK");
 
         let payload_tree = iggy
             .get("iggy.response.payload_tree")
             .expect("Response payload_tree missing");
 
         let resp_name: String = expect_iggy_field(payload_tree, "iggy.create_topic.resp.name");
-        assert_eq!(resp_name, topic_name, "Response topic name should match");
+        assert_eq!(resp_name, topic_name);
 
         let resp_partitions: u32 = expect_iggy_field(payload_tree, "iggy.create_topic.resp.partitions_count");
-        assert_eq!(
-            resp_partitions,
-            partitions_count,
-            "Response partitions count should match request"
-        );
+        assert_eq!(resp_partitions, partitions_count);
 
         Ok(())
     }
