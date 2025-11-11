@@ -33,6 +33,7 @@ local common_fields = {
     resp_status = ProtoField.uint32("iggy.response.status", "Status Code", base.DEC),
     resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name"),
     resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload"),
+    resp_command_name = ProtoField.string("iggy.response.command_name", "Command Name"),
     resp_payload = ProtoField.bytes("iggy.response.payload", "Payload"),
 }
 
@@ -300,23 +301,27 @@ local STATUS_CODES = {
 ----------------------------------------
 -- TCP stream tracking for request-response matching
 -- Using queue to support pipelining (request1, request2, response1, response2)
+-- Note: Wireshark may process packets multiple times (pinfo.visited) and out of order
+-- so we use packet numbers to cache command codes across visits
 ----------------------------------------
-local stream_requests = {}  -- [stream_id] = { queue of command_codes }
+local packet_request_codes = {}   -- [packet_number] = command_code (for request packets)
+local packet_response_codes = {}  -- [packet_number] = command_code (for response packets, matched from requests)
+local stream_request_queues = {}  -- [stream_id] = { queue of packet_numbers } (temporary, for first pass)
 local tcp_stream_field = Field.new("tcp.stream")
 
 -- Helper functions for queue operations
-local function queue_push(stream_id, command_code)
-    if not stream_requests[stream_id] then
-        stream_requests[stream_id] = {}
+local function queue_push(stream_id, packet_num)
+    if not stream_request_queues[stream_id] then
+        stream_request_queues[stream_id] = {}
     end
-    table.insert(stream_requests[stream_id], command_code)
+    table.insert(stream_request_queues[stream_id], packet_num)
 end
 
 local function queue_pop(stream_id)
-    if not stream_requests[stream_id] or #stream_requests[stream_id] == 0 then
+    if not stream_request_queues[stream_id] or #stream_request_queues[stream_id] == 0 then
         return nil
     end
-    return table.remove(stream_requests[stream_id], 1)
+    return table.remove(stream_request_queues[stream_id], 1)
 end
 
 ----------------------------------------
@@ -379,7 +384,21 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add_le(cf.req_length, buffer(0, 4))
             subtree:add_le(cf.req_command, buffer(4, 4))
 
-            -- Early return for unknown commands
+            -- Track request code for request-response matching (enqueue)
+            -- This must be done BEFORE checking if command is known, so responses can be matched
+            -- Only update state on first visit to avoid duplicates
+            if not pinfo.visited then
+                -- Store command_code for this request packet
+                packet_request_codes[pinfo.number] = command_code
+
+                -- Enqueue this request packet number for matching with response
+                local tcp_stream = tcp_stream_field()
+                if tcp_stream then
+                    queue_push(tcp_stream.value, pinfo.number)
+                end
+            end
+
+            -- Check if command is implemented
             local command_info = COMMANDS[command_code]
             if not command_info then
                 local unknown_name = string.format("Unknown(0x%x)", command_code)
@@ -403,12 +422,6 @@ function iggy.dissector(buffer, pinfo, tree)
                 command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
             end
 
-            -- Track request code for request-response matching (enqueue)
-            local tcp_stream = tcp_stream_field()
-            if tcp_stream then
-                queue_push(tcp_stream.value, command_code)
-            end
-
             -- Update info column
             pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
         elseif is_response then
@@ -428,12 +441,24 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add(cf.resp_status_name, status_name):set_generated()
 
             -- Get matching request code for this TCP stream (dequeue)
-            local tcp_stream = tcp_stream_field()
-            local command_code = tcp_stream and queue_pop(tcp_stream.value)
-            local command_info = command_code and COMMANDS[command_code]
+            -- On first visit: pop request packet number from queue and look up its command_code
+            -- On revisit: use cached value
+            local command_code
+            if not pinfo.visited then
+                local tcp_stream = tcp_stream_field()
+                local request_packet_num = tcp_stream and queue_pop(tcp_stream.value)
+                if request_packet_num then
+                    command_code = packet_request_codes[request_packet_num]
+                    packet_response_codes[pinfo.number] = command_code
+                else
+                    -- No matching request found (queue empty)
+                end
+            else
+                command_code = packet_response_codes[pinfo.number]
+            end
 
-            -- Early return for unknown commands (no matching request or unimplemented command)
-            if not command_info then
+            -- Handle case where no matching request found
+            if not command_code then
                 local unknown_name = "Unknown"
                 if payload_len > 0 then
                     subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
@@ -448,14 +473,28 @@ function iggy.dissector(buffer, pinfo, tree)
                 return
             end
 
-            -- After this point, command_info is guaranteed to exist
-            local command_name = command_info.name
-            subtree:add(cf.req_command_name, command_name):set_generated()
+            -- Check if command is implemented
+            local command_info = COMMANDS[command_code]
+            local command_name
 
-            -- Payload (only for status_code is 0(OK))
-            if payload_len > 0 and status_code == 0 then
-                local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
-                command_info.response_payload_dissector(command_info, buffer, payload_tree, payload_offset)
+            if command_info then
+                -- Command is implemented
+                command_name = command_info.name
+                subtree:add(cf.resp_command_name, command_name):set_generated()
+
+                -- Payload (only for status_code is 0(OK))
+                if payload_len > 0 and status_code == 0 then
+                    local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
+                    command_info.response_payload_dissector(command_info, buffer, payload_tree, payload_offset)
+                end
+            else
+                -- Command not implemented, but we have the code from request
+                command_name = string.format("Unknown(0x%x)", command_code)
+                subtree:add(cf.resp_command_name, command_name):set_generated()
+
+                if payload_len > 0 then
+                    subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
+                end
             end
 
             -- Update info column
@@ -489,7 +528,9 @@ local current_port = 0
 -- This is where we reset per-capture state
 function iggy.init()
     -- Clear stream tracking state for new capture session
-    stream_requests = {}
+    packet_request_codes = {}
+    packet_response_codes = {}
+    stream_request_queues = {}
 end
 
 -- Called when protocol preferences are changed
