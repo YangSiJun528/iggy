@@ -299,89 +299,78 @@ local STATUS_CODES = {
 
 ----------------------------------------
 -- Request-Response Tracker Module
--- Handles request-response matching for pipelined protocols over TCP streams
--- Uses frame numbers to support Wireshark's multi-pass dissection
+-- Handles request-response matching for pipelined protocols using Wireshark's Conversation API
+-- Requires Wireshark 4.6+ with Conversation API support
 ----------------------------------------
 local ReqRespTracker = {}
 ReqRespTracker.__index = ReqRespTracker
 
 -- Constructor: Create a new request-response tracker
--- @param stream_field: Wireshark Field object for stream identification (e.g., tcp.stream)
--- @param frame_field: Wireshark Field object for frame number (e.g., frame.number)
+-- @param proto: Protocol object for storing conversation data
 -- @return: New tracker instance
-function ReqRespTracker.new(stream_field, frame_field)
+function ReqRespTracker.new(proto)
     local self = setmetatable({}, ReqRespTracker)
-    self.stream_field = stream_field
-    self.frame_field = frame_field
-    self.requests = {}   -- [stream_id][frame_num] = request_data
-    self.responses = {}  -- [stream_id][resp_frame_num] = req_frame_num
+    self.proto = proto
     return self
 end
 
 -- Record a request
+-- @param pinfo: Wireshark packet info object
 -- @param request_data: Data to associate with this request (e.g., command code)
 -- @return: true if recorded successfully, false otherwise
-function ReqRespTracker:record_request(request_data)
-    local stream = self.stream_field()
-    local frame = self.frame_field()
-
-    if not stream or not frame then
+function ReqRespTracker:record_request(pinfo, request_data)
+    if not pinfo.conversation then
         return false
     end
 
-    local stream_id = stream.value
-    local frame_num = frame.value
+    local conv = pinfo.conversation
+    local conv_data = conv[self.proto] or { requests = {}, matched = {} }
 
-    if not self.requests[stream_id] then
-        self.requests[stream_id] = {}
-    end
+    -- Store request indexed by frame number
+    conv_data.requests[pinfo.number] = request_data
+    conv[self.proto] = conv_data
 
-    self.requests[stream_id][frame_num] = request_data
     return true
 end
 
 -- Find matching request for a response
 -- Searches backwards to find the most recent unmatched request before this response frame
+-- @param pinfo: Wireshark packet info object
 -- @return: request_data if found, nil otherwise
-function ReqRespTracker:find_request()
-    local stream = self.stream_field()
-    local frame = self.frame_field()
-
-    if not stream or not frame then
+function ReqRespTracker:find_request(pinfo)
+    if not pinfo.conversation then
         return nil
     end
 
-    local stream_id = stream.value
-    local resp_frame_num = frame.value
+    local conv = pinfo.conversation
+    local conv_data = conv[self.proto]
 
-    if not self.requests[stream_id] then
+    if not conv_data or not conv_data.requests then
         return nil
     end
 
-    -- Check if we already matched this response in a previous pass
-    if self.responses[stream_id] and self.responses[stream_id][resp_frame_num] then
-        local req_frame = self.responses[stream_id][resp_frame_num]
-        return self.requests[stream_id][req_frame]
+    local resp_frame_num = pinfo.number
+
+    -- Check if already matched
+    if conv_data.matched[resp_frame_num] then
+        return conv_data.requests[conv_data.matched[resp_frame_num]]
     end
 
-    -- Find the most recent unmatched request before this response
+    -- Find most recent unmatched request
     local best_req_frame = nil
     local best_req_data = nil
 
-    for req_frame, req_data in pairs(self.requests[stream_id]) do
+    for req_frame, req_data in pairs(conv_data.requests) do
         if req_frame < resp_frame_num then
-            -- Check if this request is already matched to an earlier response
+            -- Check if this request is already matched to another response
             local already_matched = false
-            if self.responses[stream_id] then
-                for other_resp_frame, matched_req_frame in pairs(self.responses[stream_id]) do
-                    if matched_req_frame == req_frame and other_resp_frame < resp_frame_num then
-                        already_matched = true
-                        break
-                    end
+            for _, matched_req_frame in pairs(conv_data.matched) do
+                if matched_req_frame == req_frame then
+                    already_matched = true
+                    break
                 end
             end
 
-            -- Keep the most recent unmatched request
             if not already_matched then
                 if not best_req_frame or req_frame > best_req_frame then
                     best_req_frame = req_frame
@@ -391,30 +380,18 @@ function ReqRespTracker:find_request()
         end
     end
 
-    -- Cache the match for future passes
+    -- Cache the match
     if best_req_frame then
-        if not self.responses[stream_id] then
-            self.responses[stream_id] = {}
-        end
-        self.responses[stream_id][resp_frame_num] = best_req_frame
+        conv_data.matched[resp_frame_num] = best_req_frame
+        conv[self.proto] = conv_data
     end
 
     return best_req_data
 end
-
--- Reset all tracking state (called on new capture)
-function ReqRespTracker:reset()
-    self.requests = {}
-    self.responses = {}
-end
-
 ----------------------------------------
 -- Create tracker instance for Iggy protocol
 ----------------------------------------
-local request_tracker = ReqRespTracker.new(
-    Field.new("tcp.stream"),
-    Field.new("frame.number")
-)
+local request_tracker = ReqRespTracker.new(iggy)
 
 ----------------------------------------
 -- Main dissector
@@ -501,7 +478,7 @@ function iggy.dissector(buffer, pinfo, tree)
             end
 
             -- Track request code for request-response matching
-            request_tracker:record_request(command_code)
+            request_tracker:record_request(pinfo, command_code)
 
             -- Update info column
             pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
@@ -522,7 +499,7 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add(cf.resp_status_name, status_name):set_generated()
 
             -- Get matching request code for this TCP stream
-            local command_code = request_tracker:find_request()
+            local command_code = request_tracker:find_request(pinfo)
             local command_info = command_code and COMMANDS[command_code]
 
             -- Early return for unknown commands (no matching request or unimplemented command)
@@ -577,13 +554,6 @@ end
 -- Lifecycle management
 ----------------------------------------
 local current_port = 0
-
--- Called when a capture file is opened or closed
--- This is where we reset per-capture state
-function iggy.init()
-    -- Clear request-response tracking state for new capture session
-    request_tracker:reset()
-end
 
 -- Called when protocol preferences are changed
 -- This is where we update port registration
