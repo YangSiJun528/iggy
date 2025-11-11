@@ -403,4 +403,251 @@ mod tests {
         println!("\n✓ LoginUser dissection test passed - verified request and response");
         Ok(())
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n=== Testing CreateTopic (Command 302) Dissection ===");
+
+        // Start packet capture
+        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+        let mut tshark = capture.start()?;
+        sleep(Duration::from_millis(1000)).await;
+
+        // Create client and login
+        let client = create_test_client().await?;
+
+        // Create a test stream first
+        let stream_id = 1u32;
+        let stream_name = "test_stream";
+        println!("Creating test stream: {}", stream_name);
+        client.create_stream(stream_name, Some(stream_id)).await?;
+
+        // Create a topic
+        let topic_name = "test_topic";
+        let partitions_count = 3u32;
+        println!("Sending CreateTopic command...");
+        println!("  - Stream ID: {}", stream_id);
+        println!("  - Topic name: {}", topic_name);
+        println!("  - Partitions: {}", partitions_count);
+
+        client
+            .create_topic(
+                &Identifier::numeric(stream_id)?,
+                topic_name,
+                partitions_count,
+                CompressionAlgorithm::None,
+                None, // replication_factor
+                None, // topic_id (auto-assign)
+                IggyExpiry::NeverExpire,
+                MaxTopicSize::ServerDefault,
+            )
+            .await?;
+        println!("CreateTopic successful");
+
+        // Wait for packets to be captured
+        sleep(Duration::from_secs(2)).await;
+
+        // Stop capture and analyze
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze()?;
+        let iggy_packets = extract_iggy_packets(&packets);
+
+        println!("Total packets captured: {}", packets.len());
+        println!("Iggy packets found: {}", iggy_packets.len());
+
+        // Print packet JSON for debugging
+        print_packet_json(&packets, false);
+
+        if iggy_packets.is_empty() {
+            return Err("No Iggy packets captured".into());
+        }
+
+        // Verify we have both CreateTopic request and response
+        let mut found_request = false;
+        let mut found_response = false;
+
+        for (idx, packet) in iggy_packets.iter().enumerate() {
+            let iggy = &packet["_source"]["layers"]["iggy"];
+
+            // Check for CreateTopic request (command code 302)
+            if let Some(command) = iggy.get("iggy.request.command") {
+                if let Some(cmd_val) = command.as_str() {
+                    if cmd_val == "302" {
+                        found_request = true;
+                        println!("Packet {}: ✓ CreateTopic request found", idx);
+
+                        // Verify command name
+                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                            assert_eq!(
+                                cmd_name.as_str(),
+                                Some("CreateTopic"),
+                                "Command name should be 'CreateTopic'"
+                            );
+                            println!("  - Command name: CreateTopic");
+                        }
+
+                        // Verify request fields
+                        if let Some(payload_tree) = iggy.get("iggy.request.payload_tree") {
+                            // Stream ID
+                            if let Some(stream_id_kind) =
+                                payload_tree.get("iggy.create_topic.req.stream_id_kind")
+                            {
+                                println!(
+                                    "  - Stream ID kind: {}",
+                                    stream_id_kind.as_str().unwrap_or("N/A")
+                                );
+                            }
+
+                            // Partitions count
+                            if let Some(partitions) =
+                                payload_tree.get("iggy.create_topic.req.partitions_count")
+                            {
+                                assert_eq!(
+                                    partitions.as_str(),
+                                    Some(partitions_count.to_string().as_str()),
+                                    "Partitions count should match"
+                                );
+                                println!("  - Partitions count: {}", partitions_count);
+                            }
+
+                            // Topic name
+                            if let Some(name) = payload_tree.get("iggy.create_topic.req.name") {
+                                assert_eq!(
+                                    name.as_str(),
+                                    Some(topic_name),
+                                    "Topic name should match"
+                                );
+                                println!("  - Topic name: {}", topic_name);
+                            }
+
+                            // Compression algorithm
+                            if let Some(compression) =
+                                payload_tree.get("iggy.create_topic.req.compression_algorithm")
+                            {
+                                println!(
+                                    "  - Compression: {}",
+                                    compression.as_str().unwrap_or("N/A")
+                                );
+                            }
+
+                            // Message expiry
+                            if let Some(expiry) =
+                                payload_tree.get("iggy.create_topic.req.message_expiry")
+                            {
+                                println!("  - Message expiry: {}", expiry.as_str().unwrap_or("N/A"));
+                            }
+
+                            // Max topic size
+                            if let Some(max_size) =
+                                payload_tree.get("iggy.create_topic.req.max_topic_size")
+                            {
+                                println!("  - Max topic size: {}", max_size.as_str().unwrap_or("N/A"));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check for CreateTopic response (status 0 with TopicDetails payload)
+            if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                if cmd_name.as_str() == Some("CreateTopic") {
+                    if let Some(status) = iggy.get("iggy.response.status") {
+                        if let Some(status_val) = status.as_str() {
+                            if status_val == "0" {
+                                // Check if response has payload with topic details
+                                if let Some(payload_tree) = iggy.get("iggy.response.payload_tree") {
+                                    if let Some(resp_name) =
+                                        payload_tree.get("iggy.create_topic.resp.name")
+                                    {
+                                        if resp_name.as_str() == Some(topic_name) {
+                                            found_response = true;
+                                            println!("Packet {}: ✓ CreateTopic response found", idx);
+                                            println!("  - Status: OK (0)");
+
+                                            // Verify status name
+                                            if let Some(status_name) = iggy.get("iggy.response.status_name")
+                                            {
+                                                assert_eq!(
+                                                    status_name.as_str(),
+                                                    Some("OK"),
+                                                    "Status name should be 'OK'"
+                                                );
+                                            }
+
+                                            // Topic ID
+                                            if let Some(topic_id) =
+                                                payload_tree.get("iggy.create_topic.resp.topic_id")
+                                            {
+                                                println!(
+                                                    "  - Topic ID: {}",
+                                                    topic_id.as_str().unwrap_or("N/A")
+                                                );
+                                            }
+
+                                            // Created At
+                                            if let Some(created_at) =
+                                                payload_tree.get("iggy.create_topic.resp.created_at")
+                                            {
+                                                println!(
+                                                    "  - Created At: {}",
+                                                    created_at.as_str().unwrap_or("N/A")
+                                                );
+                                            }
+
+                                            // Partitions count
+                                            if let Some(partitions) = payload_tree
+                                                .get("iggy.create_topic.resp.partitions_count")
+                                            {
+                                                assert_eq!(
+                                                    partitions.as_str(),
+                                                    Some(partitions_count.to_string().as_str()),
+                                                    "Response partitions count should match request"
+                                                );
+                                                println!("  - Partitions count: {}", partitions_count);
+                                            }
+
+                                            // Topic name
+                                            println!("  - Topic name: {}", topic_name);
+
+                                            // Size (should be 0 for new topic)
+                                            if let Some(size) =
+                                                payload_tree.get("iggy.create_topic.resp.size")
+                                            {
+                                                println!("  - Size: {}", size.as_str().unwrap_or("N/A"));
+                                            }
+
+                                            // Messages count (should be 0 for new topic)
+                                            if let Some(messages_count) = payload_tree
+                                                .get("iggy.create_topic.resp.messages_count")
+                                            {
+                                                println!(
+                                                    "  - Messages count: {}",
+                                                    messages_count.as_str().unwrap_or("N/A")
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            found_request,
+            "CreateTopic request (command 302) not found in capture"
+        );
+        assert!(
+            found_response,
+            "CreateTopic response (status 0, TopicDetails) not found in capture"
+        );
+
+        println!("\n✓ CreateTopic dissection test passed - verified request and response");
+        Ok(())
+    }
 }
