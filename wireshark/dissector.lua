@@ -18,55 +18,22 @@ iggy.experts = {
 }
 
 ----------------------------------------
--- Fields
--- Naming convention:
---   f_message_type         - Common fields (applies to both request and response)
---   f_req_*                - Request common fields (all requests)
---   f_resp_*               - Response common fields (all responses)
---   f_<cmdname>_req_*      - Command-specific request fields (e.g., f_login_req_username)
---   f_<cmdname>_resp_*     - Command-specific response fields (e.g., f_login_resp_user_id)
---
+-- Common Fields
+-- These fields are used across all commands
 -- Reference: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_ProtoField
---   ProtoField.some_type(abbr, [name], [base], [valuestring], [mask], [description])
 ----------------------------------------
--- Common fields
-local f_message_type = ProtoField.string("iggy.message_type", "Message Type")
-
--- Request common fields
-local f_req_length = ProtoField.uint32("iggy.request.length", "Length", base.DEC, nil, nil, "Length of command code + payload")
-local f_req_command = ProtoField.uint32("iggy.request.command", "Command Code", base.DEC)
-local f_req_command_name = ProtoField.string("iggy.request.command_name", "Command Name")
-local f_req_payload = ProtoField.bytes("iggy.request.payload", "Payload")
-
--- Response common fields
-local f_resp_status = ProtoField.uint32("iggy.response.status", "Status Code", base.DEC)
-local f_resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name")
-local f_resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload")
-local f_resp_payload = ProtoField.bytes("iggy.response.payload", "Payload")
-
--- Command-specific fields
--- LoginUser (code=38)
--- Request fields
-local f_login_req_username_len = ProtoField.uint8("iggy.login.req.username_len", "Username Length", base.DEC)
-local f_login_req_username = ProtoField.string("iggy.login.req.username", "Username")
-local f_login_req_password_len = ProtoField.uint8("iggy.login.req.password_len", "Password Length", base.DEC)
-local f_login_req_password = ProtoField.string("iggy.login.req.password", "Password")
-local f_login_req_version_len = ProtoField.uint32("iggy.login.req.version_len", "Version Length", base.DEC)
-local f_login_req_version = ProtoField.string("iggy.login.req.version", "Version")
-local f_login_req_context_len = ProtoField.uint32("iggy.login.req.context_len", "Context Length", base.DEC)
-local f_login_req_context = ProtoField.string("iggy.login.req.context", "Context")
--- Response fields
-local f_login_resp_user_id = ProtoField.uint32("iggy.login.resp.user_id", "User ID", base.DEC)
-
-iggy.fields = {
-    f_message_type,
-    f_req_length, f_req_command, f_req_command_name, f_req_payload,
-    f_resp_status, f_resp_status_name, f_resp_length, f_resp_payload,
-    -- LoginUser request fields
-    f_login_req_username_len, f_login_req_username, f_login_req_password_len, f_login_req_password,
-    f_login_req_version_len, f_login_req_version, f_login_req_context_len, f_login_req_context,
-    -- LoginUser response fields
-    f_login_resp_user_id,
+local common_fields = {
+    message_type = ProtoField.string("iggy.message_type", "Message Type"),
+    -- Request common fields
+    req_length = ProtoField.uint32("iggy.request.length", "Length", base.DEC, nil, nil, "Length of command code + payload"),
+    req_command = ProtoField.uint32("iggy.request.command", "Command Code", base.DEC),
+    req_command_name = ProtoField.string("iggy.request.command_name", "Command Name"),
+    req_payload = ProtoField.bytes("iggy.request.payload", "Payload"),
+    -- Response common fields
+    resp_status = ProtoField.uint32("iggy.response.status", "Status Code", base.DEC),
+    resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name"),
+    resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload"),
+    resp_payload = ProtoField.bytes("iggy.response.payload", "Payload"),
 }
 
 ----------------------------------------
@@ -84,43 +51,60 @@ local COMMANDS = {
     },
     [38] = {
         name = "LoginUser",
+
+        -- Command-specific fields
+        fields = {
+            req_username_len = ProtoField.uint8("iggy.login.req.username_len", "Username Length", base.DEC),
+            req_username = ProtoField.string("iggy.login.req.username", "Username"),
+            req_password_len = ProtoField.uint8("iggy.login.req.password_len", "Password Length", base.DEC),
+            req_password = ProtoField.string("iggy.login.req.password", "Password"),
+            req_version_len = ProtoField.uint32("iggy.login.req.version_len", "Version Length", base.DEC),
+            req_version = ProtoField.string("iggy.login.req.version", "Version"),
+            req_context_len = ProtoField.uint32("iggy.login.req.context_len", "Context Length", base.DEC),
+            req_context = ProtoField.string("iggy.login.req.context", "Context"),
+            resp_user_id = ProtoField.uint32("iggy.login.resp.user_id", "User ID", base.DEC),
+        },
+
         request_payload_dissector = function(buffer, tree, offset)
             -- Username & Password at least 3 bytes: core/common/src/commands/users/defaults.rs
+            local f = COMMANDS[38].fields
 
             -- Username (u8 length + string)
             local username_len = buffer(offset, 1):uint()
-            tree:add(f_login_req_username_len, buffer(offset, 1))
+            tree:add(f.req_username_len, buffer(offset, 1))
             offset = offset + 1
-            tree:add(f_login_req_username, buffer(offset, username_len))
+            tree:add(f.req_username, buffer(offset, username_len))
             offset = offset + username_len
 
             -- Password (u8 length + string)
             local password_len = buffer(offset, 1):uint()
-            tree:add(f_login_req_password_len, buffer(offset, 1))
+            tree:add(f.req_password_len, buffer(offset, 1))
             offset = offset + 1
-            tree:add(f_login_req_password, buffer(offset, password_len))
+            tree:add(f.req_password, buffer(offset, password_len))
             offset = offset + password_len
 
             -- Version (u32 length + string, optional)
             local version_len = buffer(offset, 4):le_uint()
-            tree:add_le(f_login_req_version_len, buffer(offset, 4))
+            tree:add_le(f.req_version_len, buffer(offset, 4))
             offset = offset + 4
             if version_len > 0 then
-                tree:add(f_login_req_version, buffer(offset, version_len))
+                tree:add(f.req_version, buffer(offset, version_len))
                 offset = offset + version_len
             end
 
             -- Context (u32 length + string, optional)
             local context_len = buffer(offset, 4):le_uint()
-            tree:add_le(f_login_req_context_len, buffer(offset, 4))
+            tree:add_le(f.req_context_len, buffer(offset, 4))
             offset = offset + 4
             if context_len > 0 then
-                tree:add(f_login_req_context, buffer(offset, context_len))
+                tree:add(f.req_context, buffer(offset, context_len))
             end
         end,
+
         response_payload_dissector = function(buffer, tree, offset)
             -- see: core/binary_protocol/src/utils/mapper.rs:455
-            tree:add_le(f_login_resp_user_id, buffer(offset, 4))
+            local f = COMMANDS[38].fields
+            tree:add_le(f.resp_user_id, buffer(offset, 4))
         end,
     },
 }
@@ -136,6 +120,27 @@ for code, cmd in pairs(COMMANDS) do
     assert(type(cmd.response_payload_dissector) == "function",
         string.format("Command %d (%s): response_payload_dissector %s", code, cmd.name, dissector_err))
 end
+
+----------------------------------------
+-- Auto-generate iggy.fields from common_fields + command-specific fields
+----------------------------------------
+local all_fields = {}
+
+-- Add common fields
+for _, field in pairs(common_fields) do
+    table.insert(all_fields, field)
+end
+
+-- Add command-specific fields
+for code, cmd in pairs(COMMANDS) do
+    if cmd.fields then
+        for _, field in pairs(cmd.fields) do
+            table.insert(all_fields, field)
+        end
+    end
+end
+
+iggy.fields = all_fields
 
 ----------------------------------------
 -- Status Code Registry
@@ -162,6 +167,7 @@ function iggy.dissector(buffer, pinfo, tree)
     local server_port = iggy.prefs.server_port
     local is_request = (pinfo.dst_port == server_port)
     local is_response = (pinfo.src_port == server_port)
+    local cf = common_fields  -- Shorthand for common fields
 
     ----------------------------------------
     -- TCP Desegmentation: Ensure we have complete packet
@@ -205,20 +211,20 @@ function iggy.dissector(buffer, pinfo, tree)
             local command_code = buffer(4, 4):le_uint()
 
             local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Request")
-            subtree:add(f_message_type, "Request"):set_generated()
+            subtree:add(cf.message_type, "Request"):set_generated()
 
             -- Length and command code
-            subtree:add_le(f_req_length, buffer(0, 4))
-            subtree:add_le(f_req_command, buffer(4, 4))
+            subtree:add_le(cf.req_length, buffer(0, 4))
+            subtree:add_le(cf.req_command, buffer(4, 4))
 
             -- Early return for unknown commands
             local command_info = COMMANDS[command_code]
             if not command_info then
                 local unknown_name = string.format("Unknown(0x%x)", command_code)
-                subtree:add(f_req_command_name, unknown_name):set_generated()
+                subtree:add(cf.req_command_name, unknown_name):set_generated()
 
                 if payload_len > 0 then
-                    subtree:add(f_req_payload, buffer(payload_offset, payload_len))
+                    subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
                 end
 
                 pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", unknown_name, command_code, length))
@@ -227,11 +233,11 @@ function iggy.dissector(buffer, pinfo, tree)
 
             -- After this point, command_info is guaranteed to exist
             local command_name = command_info.name
-            subtree:add(f_req_command_name, command_name):set_generated()
+            subtree:add(cf.req_command_name, command_name):set_generated()
 
             -- Payload
             if payload_len > 0 then
-                local payload_tree = subtree:add(f_req_payload, buffer(payload_offset, payload_len))
+                local payload_tree = subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
                 command_info.request_payload_dissector(buffer, payload_tree, payload_offset)
             end
 
@@ -250,15 +256,15 @@ function iggy.dissector(buffer, pinfo, tree)
             local length = buffer(4, 4):le_uint()
 
             local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Response")
-            subtree:add(f_message_type, "Response"):set_generated()
+            subtree:add(cf.message_type, "Response"):set_generated()
 
             -- Status code and length
-            subtree:add_le(f_resp_status, buffer(0, 4))
-            subtree:add_le(f_resp_length, buffer(4, 4))
+            subtree:add_le(cf.resp_status, buffer(0, 4))
+            subtree:add_le(cf.resp_length, buffer(4, 4))
 
             -- Status name
             local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
-            subtree:add(f_resp_status_name, status_name):set_generated()
+            subtree:add(cf.resp_status_name, status_name):set_generated()
 
             -- Get last request code for this TCP stream
             local tcp_stream = tcp_stream_field()
@@ -269,7 +275,7 @@ function iggy.dissector(buffer, pinfo, tree)
             if not command_info then
                 local unknown_name = "Unknown"
                 if payload_len > 0 then
-                    subtree:add(f_resp_payload, buffer(payload_offset, payload_len))
+                    subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
                 end
 
                 if status_code == 0 then
@@ -283,11 +289,11 @@ function iggy.dissector(buffer, pinfo, tree)
 
             -- After this point, command_info is guaranteed to exist
             local command_name = command_info.name
-            subtree:add(f_req_command_name, command_name):set_generated()
+            subtree:add(cf.req_command_name, command_name):set_generated()
 
             -- Payload (only for status_code is 0(OK))
             if payload_len > 0 and status_code == 0 then
-                local payload_tree = subtree:add(f_resp_payload, buffer(payload_offset, payload_len))
+                local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
                 command_info.response_payload_dissector(buffer, payload_tree, payload_offset)
             end
 
