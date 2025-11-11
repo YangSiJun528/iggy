@@ -17,13 +17,8 @@ iggy.experts = {
     ef_dissection_error,
 }
 
--- TCP Fields
-local tcp_stream_f = Field.new("tcp.stream")
-local tcp_flags_fin_f = Field.new("tcp.flags.fin")
-local tcp_flags_reset_f = Field.new("tcp.flags.reset")
-
 ----------------------------------------
--- Fields (이름 겹치는데 흠...)
+-- Fields
 -- Naming convention:
 --   f_message_type         - Common fields (applies to both request and response)
 --   f_req_*                - Request common fields (all requests)
@@ -153,59 +148,15 @@ local STATUS_CODES = {
 
 ----------------------------------------
 -- TCP stream tracking for request-response matching
--- Each TCP stream has a FIFO queue of request command codes
 ----------------------------------------
--- Private state
-local queues = {}
-
--- Public interface
-local stream_queues = {}
-
-function stream_queues.enqueue(stream_id, command_code)
-    if not queues[stream_id] then
-        queues[stream_id] = {}
-    end
-    table.insert(queues[stream_id], command_code)
-end
-
-function stream_queues.dequeue(stream_id)
-    local queue = queues[stream_id]
-    if not queue or #queue == 0 then
-        return nil
-    end
-    local command_code = table.remove(queue, 1)
-
-    -- Clean up empty queue to prevent memory accumulation
-    if #queue == 0 then
-        queues[stream_id] = nil
-    end
-
-    return command_code
-end
-
-function stream_queues.clear_stream(stream_id)
-    queues[stream_id] = nil
-end
-
-function stream_queues.clear_all()
-    queues = {}
-end
+local stream_requests = {}
+local tcp_stream_field = Field.new("tcp.stream")
 
 ----------------------------------------
 -- Main dissector
 ----------------------------------------
 function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
-
-    -- Check for TCP connection termination and clean up queue
-    local tcp_stream = tcp_stream_f()
-    local tcp_flags_fin = tcp_flags_fin_f()
-    local tcp_flags_reset = tcp_flags_reset_f()
-
-    if tcp_stream and (tcp_flags_fin or tcp_flags_reset) then
-        -- Clean up queue when connection closes (FIN or RST)
-        stream_queues.clear_stream(tcp_stream.value)
-    end
 
     local buflen = buffer:len()
     local server_port = iggy.prefs.server_port
@@ -285,8 +236,9 @@ function iggy.dissector(buffer, pinfo, tree)
             end
 
             -- Track request code for request-response matching
+            local tcp_stream = tcp_stream_field()
             if tcp_stream then
-                stream_queues.enqueue(tcp_stream.value, command_code)
+                stream_requests[tcp_stream.value] = command_code
             end
 
             -- Update info column
@@ -308,8 +260,9 @@ function iggy.dissector(buffer, pinfo, tree)
             local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
             subtree:add(f_resp_status_name, status_name):set_generated()
 
-            -- Get matching request code for this TCP stream (FIFO order)
-            local command_code = tcp_stream and stream_queues.dequeue(tcp_stream.value)
+            -- Get last request code for this TCP stream
+            local tcp_stream = tcp_stream_field()
+            local command_code = tcp_stream and stream_requests[tcp_stream.value]
             local command_info = command_code and COMMANDS[command_code]
 
             -- Early return for unknown commands (no matching request or unimplemented command)
@@ -361,29 +314,21 @@ function iggy.dissector(buffer, pinfo, tree)
 end
 
 ----------------------------------------
--- Preferences changed callback
--- Called when user changes preferences in Wireshark UI
+-- Port registration management
 ----------------------------------------
-local current_port = iggy.prefs.server_port
+local current_port = 0
 
-function iggy.prefs_changed()
+function iggy.init()
     local tcp_port = DissectorTable.get("tcp.port")
 
-    if current_port ~= iggy.prefs.server_port then
-        stream_queues.clear_all()
+    -- Remove old port registration if exists
+    if current_port > 0 then
+        tcp_port:remove(current_port, iggy)
+    end
 
-        if current_port > 0 then
-            tcp_port:remove(current_port, iggy)
-        end
-
-        current_port = iggy.prefs.server_port
-        if current_port > 0 then
-            tcp_port:add(current_port, iggy)
-        end
+    -- Register new port
+    current_port = iggy.prefs.server_port
+    if current_port > 0 then
+        tcp_port:add(current_port, iggy)
     end
 end
-
-----------------------------------------
--- Register protocol to default port
-----------------------------------------
-DissectorTable.get("tcp.port"):add(iggy.prefs.server_port, iggy)
