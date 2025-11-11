@@ -143,14 +143,11 @@ local COMMANDS = {
             local f = self.fields.request
 
             -- Stream ID (Identifier: kind + length + value)
-            local stream_id_kind = buffer(offset, 1):uint()
             tree:add(f.stream_id_kind, buffer(offset, 1))
             offset = offset + 1
-
             local stream_id_length = buffer(offset, 1):uint()
             tree:add(f.stream_id_length, buffer(offset, 1))
             offset = offset + 1
-
             tree:add(f.stream_id_value, buffer(offset, stream_id_length))
             offset = offset + stream_id_length
 
