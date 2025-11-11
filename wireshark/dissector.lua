@@ -3,14 +3,6 @@
 local iggy = Proto("iggy", "Iggy Protocol")
 
 ----------------------------------------
--- TCP Field Extractors
--- Used for tracking TCP streams and connection state
-----------------------------------------
-local tcp_stream_f = Field.new("tcp.stream")
-local tcp_flags_fin_f = Field.new("tcp.flags.fin")
-local tcp_flags_reset_f = Field.new("tcp.flags.reset")
-
-----------------------------------------
 -- Preferences
 ----------------------------------------
 iggy.prefs.server_port = Pref.uint("Server Port", 8090, "Target TCP server port")
@@ -24,6 +16,11 @@ local ef_dissection_error = ProtoExpert.new("iggy.dissection_error", "Dissection
 iggy.experts = {
     ef_dissection_error,
 }
+
+-- TCP Fields
+local tcp_stream_f = Field.new("tcp.stream")
+local tcp_flags_fin_f = Field.new("tcp.flags.fin")
+local tcp_flags_reset_f = Field.new("tcp.flags.reset")
 
 ----------------------------------------
 -- Fields (이름 겹치는데 흠...)
@@ -199,9 +196,6 @@ end
 ----------------------------------------
 function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
-
-    -- Debug: Print when dissector is called
-    -- print(string.format("Iggy dissector called: buflen=%d, src=%d, dst=%d", buffer:len(), pinfo.src_port, pinfo.dst_port))
 
     -- Check for TCP connection termination and clean up queue
     local tcp_stream = tcp_stream_f()
