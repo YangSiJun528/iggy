@@ -17,8 +17,13 @@ iggy.experts = {
     ef_dissection_error,
 }
 
+-- TCP Fields
+local tcp_stream_f = Field.new("tcp.stream")
+local tcp_flags_fin_f = Field.new("tcp.flags.fin")
+local tcp_flags_reset_f = Field.new("tcp.flags.reset")
+
 ----------------------------------------
--- Fields
+-- Fields (이름 겹치는데 흠...)
 -- Naming convention:
 --   f_message_type         - Common fields (applies to both request and response)
 --   f_req_*                - Request common fields (all requests)
@@ -193,9 +198,9 @@ function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
 
     -- Check for TCP connection termination and clean up queue
-    local tcp_stream = Field.new("tcp.stream")
-    local tcp_flags_fin = Field.new("tcp.flags.fin")
-    local tcp_flags_reset = Field.new("tcp.flags.reset")
+    local tcp_stream = tcp_stream_f()
+    local tcp_flags_fin = tcp_flags_fin_f()
+    local tcp_flags_reset = tcp_flags_reset_f()
 
     if tcp_stream and (tcp_flags_fin or tcp_flags_reset) then
         -- Clean up queue when connection closes (FIN or RST)
