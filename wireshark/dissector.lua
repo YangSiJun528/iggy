@@ -58,6 +58,21 @@ local f_login_req_context = ProtoField.string("iggy.login.req.context", "Context
 -- Response fields
 local f_login_resp_user_id = ProtoField.uint32("iggy.login.resp.user_id", "User ID", base.DEC)
 
+-- PollMessages (code=100)
+-- Request fields
+local f_poll_req_consumer_kind = ProtoField.uint8("iggy.poll.req.consumer_kind", "Consumer Kind", base.DEC)
+local f_poll_req_consumer_id_len = ProtoField.uint8("iggy.poll.req.consumer_id_len", "Consumer ID Length", base.DEC)
+local f_poll_req_consumer_id = ProtoField.string("iggy.poll.req.consumer_id", "Consumer ID")
+local f_poll_req_stream_id_len = ProtoField.uint8("iggy.poll.req.stream_id_len", "Stream ID Length", base.DEC)
+local f_poll_req_stream_id = ProtoField.string("iggy.poll.req.stream_id", "Stream ID")
+local f_poll_req_topic_id_len = ProtoField.uint8("iggy.poll.req.topic_id_len", "Topic ID Length", base.DEC)
+local f_poll_req_topic_id = ProtoField.string("iggy.poll.req.topic_id", "Topic ID")
+local f_poll_req_partition_id = ProtoField.uint32("iggy.poll.req.partition_id", "Partition ID", base.DEC)
+local f_poll_req_polling_kind = ProtoField.uint8("iggy.poll.req.polling_kind", "Polling Kind", base.DEC)
+local f_poll_req_polling_value = ProtoField.uint64("iggy.poll.req.polling_value", "Polling Value", base.DEC)
+local f_poll_req_count = ProtoField.uint32("iggy.poll.req.count", "Message Count", base.DEC)
+local f_poll_req_auto_commit = ProtoField.uint8("iggy.poll.req.auto_commit", "Auto Commit", base.DEC)
+
 iggy.fields = {
     f_message_type,
     f_req_length, f_req_command, f_req_command_name, f_req_payload,
@@ -67,6 +82,12 @@ iggy.fields = {
     f_login_req_version_len, f_login_req_version, f_login_req_context_len, f_login_req_context,
     -- LoginUser response fields
     f_login_resp_user_id,
+    -- PollMessages request fields
+    f_poll_req_consumer_kind, f_poll_req_consumer_id_len, f_poll_req_consumer_id,
+    f_poll_req_stream_id_len, f_poll_req_stream_id,
+    f_poll_req_topic_id_len, f_poll_req_topic_id,
+    f_poll_req_partition_id, f_poll_req_polling_kind, f_poll_req_polling_value,
+    f_poll_req_count, f_poll_req_auto_commit,
 }
 
 ----------------------------------------
@@ -121,6 +142,69 @@ local COMMANDS = {
         response_payload_dissector = function(buffer, tree, offset)
             -- see: core/binary_protocol/src/utils/mapper.rs:455
             tree:add_le(f_login_resp_user_id, buffer(offset, 4))
+        end,
+    },
+    [100] = {
+        name = "PollMessages",
+        request_payload_dissector = function(buffer, tree, offset)
+            -- Reference: core/common/src/commands/messages/poll_messages.rs
+            -- Format: consumer + stream_id + topic_id + partition_id + strategy + count + auto_commit
+
+            -- Consumer Kind (u8)
+            tree:add(f_poll_req_consumer_kind, buffer(offset, 1))
+            offset = offset + 1
+
+            -- Consumer ID (Identifier: u8 length + string)
+            local consumer_id_len = buffer(offset, 1):uint()
+            tree:add(f_poll_req_consumer_id_len, buffer(offset, 1))
+            offset = offset + 1
+            if consumer_id_len > 0 then
+                tree:add(f_poll_req_consumer_id, buffer(offset, consumer_id_len))
+                offset = offset + consumer_id_len
+            end
+
+            -- Stream ID (Identifier: u8 length + string)
+            local stream_id_len = buffer(offset, 1):uint()
+            tree:add(f_poll_req_stream_id_len, buffer(offset, 1))
+            offset = offset + 1
+            if stream_id_len > 0 then
+                tree:add(f_poll_req_stream_id, buffer(offset, stream_id_len))
+                offset = offset + stream_id_len
+            end
+
+            -- Topic ID (Identifier: u8 length + string)
+            local topic_id_len = buffer(offset, 1):uint()
+            tree:add(f_poll_req_topic_id_len, buffer(offset, 1))
+            offset = offset + 1
+            if topic_id_len > 0 then
+                tree:add(f_poll_req_topic_id, buffer(offset, topic_id_len))
+                offset = offset + topic_id_len
+            end
+
+            -- Partition ID (u32 little-endian, 0 = None)
+            tree:add_le(f_poll_req_partition_id, buffer(offset, 4))
+            offset = offset + 4
+
+            -- Polling Strategy Kind (u8)
+            tree:add(f_poll_req_polling_kind, buffer(offset, 1))
+            offset = offset + 1
+
+            -- Polling Strategy Value (u64 little-endian)
+            tree:add_le(f_poll_req_polling_value, buffer(offset, 8))
+            offset = offset + 8
+
+            -- Count (u32 little-endian)
+            tree:add_le(f_poll_req_count, buffer(offset, 4))
+            offset = offset + 4
+
+            -- Auto Commit (u8, 0 = false, 1 = true)
+            tree:add(f_poll_req_auto_commit, buffer(offset, 1))
+        end,
+        response_payload_dissector = function(buffer, tree, offset)
+            -- PollMessages response contains PolledMessages
+            -- This is complex and would need detailed parsing
+            -- For now, we'll leave it as raw bytes
+            -- TODO: Implement PolledMessages dissection
         end,
     },
 }

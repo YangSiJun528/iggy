@@ -403,4 +403,122 @@ mod tests {
         println!("\n✓ LoginUser dissection test passed - verified request and response");
         Ok(())
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_poll_messages_dissection() -> Result<(), Box<dyn std::error::Error>> {
+        println!("\n=== Testing PollMessages (Command 100) Dissection ===");
+
+        // Start packet capture
+        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+        let mut tshark = capture.start()?;
+        sleep(Duration::from_millis(1000)).await;
+
+        // Create and login client
+        let client = create_test_client().await?;
+
+        println!("Sending PollMessages command...");
+
+        // Poll messages from stream 1, topic 1, partition 1
+        let stream_id = &Identifier::numeric(1)?;
+        let topic_id = &Identifier::numeric(1)?;
+        let partition_id = Some(1);
+        let consumer = &Consumer {
+            kind: ConsumerKind::Consumer,
+            id: Identifier::numeric(1)?,
+        };
+        let strategy = &PollingStrategy::offset(0);
+        let count = 10;
+        let auto_commit = false;
+
+        // Note: This might fail if stream/topic doesn't exist, but we're testing dissection
+        let _result = client
+            .poll_messages(stream_id, topic_id, partition_id, consumer, strategy, count, auto_commit)
+            .await;
+
+        println!("PollMessages command sent (result ignored for dissection test)");
+
+        // Wait for packets to be captured
+        sleep(Duration::from_secs(2)).await;
+
+        // Stop capture and analyze
+        let _ = tshark.kill();
+        sleep(Duration::from_millis(500)).await;
+
+        let packets = capture.analyze()?;
+        let iggy_packets = extract_iggy_packets(&packets);
+
+        println!("Total packets captured: {}", packets.len());
+        println!("Iggy packets found: {}", iggy_packets.len());
+
+        // Print packet JSON for debugging
+        print_packet_json(&packets, false);
+
+        if iggy_packets.is_empty() {
+            return Err("No Iggy packets captured".into());
+        }
+
+        // Verify we have PollMessages request
+        let mut found_request = false;
+
+        for (idx, packet) in iggy_packets.iter().enumerate() {
+            let iggy = &packet["_source"]["layers"]["iggy"];
+
+            // Check for PollMessages request (command code 100)
+            if let Some(command) = iggy.get("iggy.request.command") {
+                if let Some(cmd_val) = command.as_str() {
+                    if cmd_val == "100" {
+                        found_request = true;
+                        println!("Packet {}: ✓ PollMessages request found", idx);
+
+                        // Verify command name
+                        if let Some(cmd_name) = iggy.get("iggy.request.command_name") {
+                            assert_eq!(cmd_name.as_str(), Some("PollMessages"), "Command name should be 'PollMessages'");
+                            println!("  - Command name: PollMessages");
+                        }
+
+                        // Verify has payload tree
+                        if let Some(payload_tree) = iggy.get("iggy.request.payload_tree") {
+                            // Verify consumer kind field
+                            if let Some(consumer_kind) = payload_tree.get("iggy.poll.req.consumer_kind") {
+                                println!("  - Consumer Kind: {}", consumer_kind.as_str().unwrap_or("N/A"));
+                            }
+
+                            // Verify stream ID
+                            if let Some(stream_id) = payload_tree.get("iggy.poll.req.stream_id") {
+                                println!("  - Stream ID: {}", stream_id.as_str().unwrap_or("N/A"));
+                            }
+
+                            // Verify topic ID
+                            if let Some(topic_id) = payload_tree.get("iggy.poll.req.topic_id") {
+                                println!("  - Topic ID: {}", topic_id.as_str().unwrap_or("N/A"));
+                            }
+
+                            // Verify partition ID
+                            if let Some(partition_id) = payload_tree.get("iggy.poll.req.partition_id") {
+                                println!("  - Partition ID: {}", partition_id.as_str().unwrap_or("N/A"));
+                            }
+
+                            // Verify count
+                            if let Some(count) = payload_tree.get("iggy.poll.req.count") {
+                                assert_eq!(count.as_str(), Some("10"), "Count should be 10");
+                                println!("  - Count: 10");
+                            }
+
+                            // Verify auto_commit
+                            if let Some(auto_commit) = payload_tree.get("iggy.poll.req.auto_commit") {
+                                assert_eq!(auto_commit.as_str(), Some("0"), "Auto commit should be 0 (false)");
+                                println!("  - Auto Commit: 0 (false)");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(found_request, "PollMessages request (command 100) not found in capture");
+
+        println!("\n✓ PollMessages dissection test passed - verified request");
+        Ok(())
+    }
 }
