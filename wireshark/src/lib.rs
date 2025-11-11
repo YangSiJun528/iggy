@@ -346,18 +346,18 @@ mod tests {
                         }
 
                         // Verify username field
-                        if let Some(username) = iggy.get("iggy.login.username") {
+                        if let Some(username) = iggy.get("iggy.login.req.username") {
                             assert_eq!(username.as_str(), Some(DEFAULT_ROOT_USERNAME), "Username should match");
                             println!("  - Username: {}", DEFAULT_ROOT_USERNAME);
                         }
 
                         // Verify request has username length field
-                        if let Some(username_len) = iggy.get("iggy.login.username_len") {
+                        if let Some(username_len) = iggy.get("iggy.login.req.username_len") {
                             println!("  - Username length: {}", username_len.as_str().unwrap_or("N/A"));
                         }
 
                         // Verify request has password length field
-                        if let Some(password_len) = iggy.get("iggy.login.password_len") {
+                        if let Some(password_len) = iggy.get("iggy.login.req.password_len") {
                             println!("  - Password length: {}", password_len.as_str().unwrap_or("N/A"));
                         }
                     }
@@ -372,7 +372,7 @@ mod tests {
                             if status_val == "0" {
                                 // Check if response has payload_tree with user_id field
                                 if let Some(payload_tree) = iggy.get("iggy.response.payload_tree") {
-                                    if let Some(user_id) = payload_tree.get("iggy.login.user_id") {
+                                    if let Some(user_id) = payload_tree.get("iggy.login.resp.user_id") {
                                         found_response = true;
                                         println!("Packet {}: ✓ LoginUser response found", idx);
                                         println!("  - Status: OK (0)");
