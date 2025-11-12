@@ -20,6 +20,11 @@ mod tests {
     const SERVER_IP: &str = "127.0.0.1";
     const SERVER_TCP_PORT: u16 = 8090;
 
+    /// Timing constants for packet capture tests
+    const CAPTURE_START_WAIT_MS: u64 = 1000;
+    const OPERATION_WAIT_SECS: u64 = 2;
+    const CAPTURE_STOP_WAIT_MS: u64 = 500;
+
     /// Helper function to extract and parse iggy field values (returns Result)
     fn get_iggy_field<T>(iggy: &Value, field: &str) -> Result<T, String>
     where
@@ -145,6 +150,73 @@ mod tests {
         }
     }
 
+    /// Test fixture that manages tshark capture and client lifecycle
+    struct TestFixture {
+        capture: TsharkCapture,
+        tshark_process: Option<Child>,
+        client: IggyClient,
+    }
+
+    impl TestFixture {
+        /// Create a new test fixture with automatic login
+        async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+            let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+            let tshark = capture.start()?;
+            sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
+
+            let client = create_test_client().await?;
+
+            Ok(Self {
+                capture,
+                tshark_process: Some(tshark),
+                client,
+            })
+        }
+
+        /// Create a new test fixture without automatic login (for login-specific tests)
+        async fn new_without_auto_login() -> Result<Self, Box<dyn std::error::Error>> {
+            let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
+            let tshark = capture.start()?;
+            sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
+
+            // Create client without login for login-specific tests
+            let tcp_config = TcpClientConfig {
+                server_address: format!("{}:{}", SERVER_IP, SERVER_TCP_PORT),
+                ..Default::default()
+            };
+            let tcp_client = TcpClient::create(Arc::new(tcp_config))?;
+            let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
+            client.connect().await?;
+
+            Ok(Self {
+                capture,
+                tshark_process: Some(tshark),
+                client,
+            })
+        }
+
+        /// Stop packet capture and analyze captured packets
+        async fn stop_and_analyze(&mut self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+            sleep(Duration::from_secs(OPERATION_WAIT_SECS)).await;
+
+            if let Some(mut tshark) = self.tshark_process.take() {
+                let _ = tshark.kill();
+            }
+            sleep(Duration::from_millis(CAPTURE_STOP_WAIT_MS)).await;
+
+            let packets = self.capture.analyze()?;
+            let iggy_packets = extract_iggy_packets(&packets);
+
+            print_packet_json(&packets, false);
+
+            if iggy_packets.is_empty() {
+                return Err("No Iggy packets captured".into());
+            }
+
+            Ok(packets)
+        }
+    }
+
     /// Helper function to create an IggyClient connected to the test server
     async fn create_test_client() -> Result<IggyClient, IggyError> {
         let tcp_config = TcpClientConfig {
@@ -170,6 +242,81 @@ mod tests {
             .iter()
             .filter(|p| p["_source"]["layers"].get("iggy").is_some())
             .collect()
+    }
+
+    /// Find request packet by command ID
+    fn find_request_packet<'a>(
+        iggy_packets: &[&'a Value],
+        command_id: u32,
+        command_name: &str,
+    ) -> Result<&'a Value, String> {
+        iggy_packets
+            .iter()
+            .find_map(|packet| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let command: u32 = get_iggy_field(iggy, "iggy.request.command").ok()?;
+                (command == command_id).then_some(iggy)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "{} request (command {}) not found in capture",
+                    command_name, command_id
+                )
+            })
+    }
+
+    /// Find response packet by command name and status
+    fn find_response_packet<'a>(
+        iggy_packets: &[&'a Value],
+        command_name: &str,
+        status: u32,
+    ) -> Result<&'a Value, String> {
+        iggy_packets
+            .iter()
+            .find_map(|packet| {
+                let iggy = &packet["_source"]["layers"]["iggy"];
+                let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
+                let pkt_status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
+                (cmd_name == command_name && pkt_status == status).then_some(iggy)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "{} response (status {}) not found in capture",
+                    command_name, status
+                )
+            })
+    }
+
+    /// Verify basic request fields
+    fn verify_request_basics(
+        iggy: &Value,
+        expected_command: &str,
+        expected_length: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
+        assert_eq!(cmd_name, expected_command);
+
+        let length: u32 = expect_iggy_field(iggy, "iggy.request.length");
+        assert_eq!(length, expected_length);
+
+        Ok(())
+    }
+
+    /// Verify basic response fields
+    fn verify_response_basics(
+        iggy: &Value,
+        expected_status: &str,
+        expected_length: Option<u32>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
+        assert_eq!(status_name, expected_status);
+
+        if let Some(len) = expected_length {
+            let length: u32 = expect_iggy_field(iggy, "iggy.response.length");
+            assert_eq!(length, len);
+        }
+
+        Ok(())
     }
 
     /// Helper function to print packet details for debugging
@@ -213,67 +360,20 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        // Start packet capture
-        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
-        sleep(Duration::from_millis(1000)).await;
+        let mut fixture = TestFixture::new().await?;
 
-        // Create client (this will also send login, which is fine)
-        let client = create_test_client().await?;
+        fixture.client.ping().await?;
 
-        client.ping().await?;
-
-        // Wait for packets to be captured
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop capture and analyze
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        let packets = capture.analyze()?;
+        let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Print packet JSON for debugging
-        print_packet_json(&packets, false);
-
-        if iggy_packets.is_empty() {
-            return Err("No Iggy packets captured".into());
-        }
-
         // Verify Ping request
-        let (_idx, iggy) = iggy_packets
-            .iter()
-            .enumerate()
-            .find_map(|(idx, packet)| {
-                let iggy = &packet["_source"]["layers"]["iggy"];
-                let command: u32 = get_iggy_field(iggy, "iggy.request.command").ok()?;
-                (command == 1).then_some((idx, iggy))
-            })
-            .expect("Ping request (command 1) not found in capture");
-
-        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
-        assert_eq!(cmd_name, "Ping");
-
-        let length: u32 = expect_iggy_field(iggy, "iggy.request.length");
-        assert_eq!(length, 4);
+        let iggy = find_request_packet(&iggy_packets, 1, "Ping")?;
+        verify_request_basics(iggy, "Ping", 4)?;
 
         // Verify Ping response
-        let (_idx, iggy) = iggy_packets
-            .iter()
-            .enumerate()
-            .find_map(|(idx, packet)| {
-                let iggy = &packet["_source"]["layers"]["iggy"];
-                let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
-                let status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
-                (cmd_name == "Ping" && status == 0).then_some((idx, iggy))
-            })
-            .expect("Ping response (status 0, length 0) not found in capture");
-
-        let resp_length: u32 = expect_iggy_field(iggy, "iggy.response.length");
-        assert_eq!(resp_length, 0);
-
-        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
-        assert_eq!(status_name, "OK");
+        let iggy = find_response_packet(&iggy_packets, "Ping", 0)?;
+        verify_response_basics(iggy, "OK", Some(0))?;
 
         Ok(())
     }
@@ -281,55 +381,18 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        // Start packet capture
-        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
-        sleep(Duration::from_millis(1000)).await;
+        let mut fixture = TestFixture::new_without_auto_login().await?;
 
-        // Create TCP client without auto-login, then manually login
-        let tcp_config = TcpClientConfig {
-            server_address: format!("{}:{}", SERVER_IP, SERVER_TCP_PORT),
-            ..Default::default()
-        };
-
-        let tcp_client = TcpClient::create(Arc::new(tcp_config))?;
-        let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
-        client.connect().await?;
-
-        client
+        fixture
+            .client
             .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
             .await?;
 
-        // Wait for packets to be captured
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop capture and analyze
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        let packets = capture.analyze()?;
+        let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Print packet JSON for debugging
-        print_packet_json(&packets, false);
-
-        if iggy_packets.is_empty() {
-            return Err("No Iggy packets captured".into());
-        }
-
         // Verify LoginUser request
-        let (_idx, iggy) = iggy_packets
-            .iter()
-            .enumerate()
-            .find_map(|(idx, packet)| {
-                let iggy = &packet["_source"]["layers"]["iggy"];
-                let command: u32 = get_iggy_field(iggy, "iggy.request.command").ok()?;
-                (command == 38).then_some((idx, iggy))
-            })
-            .expect("LoginUser request (command 38) not found in capture");
-
-        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
-        assert_eq!(cmd_name, "LoginUser");
+        let iggy = find_request_packet(&iggy_packets, 38, "LoginUser")?;
 
         let payload_tree = iggy
             .get("iggy.request.payload_tree")
@@ -339,28 +402,14 @@ mod tests {
         assert_eq!(username, DEFAULT_ROOT_USERNAME);
 
         // Verify LoginUser response
-        let (_idx, iggy) = iggy_packets
-            .iter()
-            .enumerate()
-            .find_map(|(idx, packet)| {
-                let iggy = &packet["_source"]["layers"]["iggy"];
-                let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
-                let status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
-                (cmd_name == "LoginUser" && status == 0).then_some((idx, iggy))
-            })
-            .expect("LoginUser response (status 0, user_id) not found in capture");
+        let iggy = find_response_packet(&iggy_packets, "LoginUser", 0)?;
+        verify_response_basics(iggy, "OK", Some(4))?;
 
         let payload_tree = iggy
             .get("iggy.response.payload_tree")
             .expect("Response payload_tree missing");
 
         let _user_id: u32 = expect_iggy_field(payload_tree, "iggy.login_user.resp.user_id");
-
-        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
-        assert_eq!(status_name, "OK");
-
-        let length: u32 = expect_iggy_field(iggy, "iggy.response.length");
-        assert_eq!(length, 4);
 
         Ok(())
     }
@@ -369,24 +418,22 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        // Start packet capture
-        let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-        let mut tshark = capture.start()?;
-        sleep(Duration::from_millis(1000)).await;
-
-        // Create client and login
-        let client = create_test_client().await?;
+        let mut fixture = TestFixture::new().await?;
 
         // Create a test stream first
         let stream_id = 1u32;
         let stream_name = "test_stream";
-        client.create_stream(stream_name, Some(stream_id)).await?;
+        fixture
+            .client
+            .create_stream(stream_name, Some(stream_id))
+            .await?;
 
         // Create a topic
         let topic_name = "test_topic";
         let partitions_count = 3u32;
 
-        client
+        fixture
+            .client
             .create_topic(
                 &Identifier::numeric(stream_id)?,
                 topic_name,
@@ -399,61 +446,26 @@ mod tests {
             )
             .await?;
 
-        // Wait for packets to be captured
-        sleep(Duration::from_secs(2)).await;
-
-        // Stop capture and analyze
-        let _ = tshark.kill();
-        sleep(Duration::from_millis(500)).await;
-
-        let packets = capture.analyze()?;
+        let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Print packet JSON for debugging
-        print_packet_json(&packets, false);
-
-        if iggy_packets.is_empty() {
-            return Err("No Iggy packets captured".into());
-        }
-
         // Verify CreateTopic request
-        let (_idx, iggy) = iggy_packets
-            .iter()
-            .enumerate()
-            .find_map(|(idx, packet)| {
-                let iggy = &packet["_source"]["layers"]["iggy"];
-                let command: u32 = get_iggy_field(iggy, "iggy.request.command").ok()?;
-                (command == 302).then_some((idx, iggy))
-            })
-            .expect("CreateTopic request (command 302) not found in capture");
-
-        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
-        assert_eq!(cmd_name, "CreateTopic");
+        let iggy = find_request_packet(&iggy_packets, 302, "CreateTopic")?;
 
         let payload_tree = iggy
             .get("iggy.request.payload_tree")
             .expect("Request payload_tree missing");
 
-        let partitions: u32 = expect_iggy_field(payload_tree, "iggy.create_topic.req.partitions_count");
+        let partitions: u32 =
+            expect_iggy_field(payload_tree, "iggy.create_topic.req.partitions_count");
         assert_eq!(partitions, partitions_count);
 
         let name: String = expect_iggy_field(payload_tree, "iggy.create_topic.req.name");
         assert_eq!(name, topic_name);
 
         // Verify CreateTopic response
-        let (_idx, iggy) = iggy_packets
-            .iter()
-            .enumerate()
-            .find_map(|(idx, packet)| {
-                let iggy = &packet["_source"]["layers"]["iggy"];
-                let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
-                let status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
-                (cmd_name == "CreateTopic" && status == 0).then_some((idx, iggy))
-            })
-            .expect("CreateTopic response (status 0, TopicDetails) not found in capture");
-
-        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
-        assert_eq!(status_name, "OK");
+        let iggy = find_response_packet(&iggy_packets, "CreateTopic", 0)?;
+        verify_response_basics(iggy, "OK", None)?;
 
         let payload_tree = iggy
             .get("iggy.response.payload_tree")
@@ -462,7 +474,8 @@ mod tests {
         let resp_name: String = expect_iggy_field(payload_tree, "iggy.create_topic.resp.name");
         assert_eq!(resp_name, topic_name);
 
-        let resp_partitions: u32 = expect_iggy_field(payload_tree, "iggy.create_topic.resp.partitions_count");
+        let resp_partitions: u32 =
+            expect_iggy_field(payload_tree, "iggy.create_topic.resp.partitions_count");
         assert_eq!(resp_partitions, partitions_count);
 
         Ok(())
