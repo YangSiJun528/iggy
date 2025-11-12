@@ -209,7 +209,7 @@ mod tests {
         }
 
         /// Setup test fixture: start packet capture and connect client
-        async fn setup(&mut self, login: bool) -> Result<(), Box<dyn std::error::Error>> {
+        async fn start(&mut self, login: bool) -> Result<(), Box<dyn std::error::Error>> {
             // Start tshark capture
             self.capture.capture()?;
             sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
@@ -347,31 +347,14 @@ mod tests {
             println!("\n--- Packet {} ---", idx);
 
             if show_all {
-                // Print full packet JSON
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(packet)
-                        .unwrap_or_else(|_| "Error serializing packet".to_string())
-                );
-            } else {
-                // Print only relevant layers: TCP and Iggy
-                if let Some(layers) = packet["_source"]["layers"].as_object() {
-                    // TCP layer
-                    // if let Some(tcp) = layers.get("tcp") {
-                    //     println!("TCP Layer:");
-                    //     println!("{}", serde_json::to_string_pretty(tcp).unwrap_or_else(|_| "Error".to_string()));
-                    // }
-
-                    // Iggy layer
-                    if let Some(iggy) = layers.get("iggy") {
-                        println!("\nIggy Protocol Layer:");
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(iggy)
-                                .unwrap_or_else(|_| "Error".to_string())
-                        );
-                    }
-                }
+                let json = serde_json::to_string_pretty(packet)
+                    .unwrap_or_else(|_| "Error serializing packet".to_string());
+                println!("{}", json);
+            } else if let Some(iggy) = packet["_source"]["layers"].get("iggy") {
+                println!("\nIggy Protocol:");
+                let json = serde_json::to_string_pretty(iggy)
+                    .unwrap_or_else(|_| "Error".to_string());
+                println!("{}", json);
             }
         }
         println!("\n=== End of Packets ===\n");
@@ -381,7 +364,7 @@ mod tests {
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestFixture::new();
-        fixture.setup(true).await?;
+        fixture.start(true).await?;
 
         fixture.client.ping().await?;
 
@@ -403,7 +386,7 @@ mod tests {
     #[ignore]
     async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestFixture::new();
-        fixture.setup(false).await?;
+        fixture.start(false).await?;
 
         fixture
             .client
@@ -432,7 +415,7 @@ mod tests {
     #[ignore]
     async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestFixture::new();
-        fixture.setup(true).await?;
+        fixture.start(true).await?;
 
         // Create a test stream first
         let stream_id = 1u32;
