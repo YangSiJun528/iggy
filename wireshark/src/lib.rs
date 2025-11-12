@@ -412,7 +412,7 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        let req = verify_request_packet(&iggy_packets, 38, "LoginUser", 14)?;
+        let req = verify_request_packet(&iggy_packets, 38, "LoginUser", 27)?;
         let req_payload = get_request_payload(req).expect("LoginUser request should have payload");
 
         let username: String = expect_iggy_field(req_payload, "iggy.login_user.req.username");
@@ -462,7 +462,7 @@ mod tests {
         let iggy_packets = extract_iggy_packets(&packets);
 
         // Verify CreateTopic request (has payload with stream_id, topic_name, partitions, etc.)
-        let req = verify_request_packet(&iggy_packets, 302, "CreateTopic", 67)?;
+        let req = verify_request_packet(&iggy_packets, 302, "CreateTopic", 47)?;
         let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
         let partitions: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.partitions_count");
