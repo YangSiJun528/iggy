@@ -170,35 +170,25 @@ mod tests {
     }
 
     impl TestFixture {
-        /// Create a new test fixture with automatic login
-        async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        async fn new(login: bool) -> Result<Self, Box<dyn std::error::Error>> {
             let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
             let tshark = capture.start()?;
             sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
 
-            let client = create_test_client().await?;
-
-            Ok(Self {
-                capture,
-                tshark_process: Some(tshark),
-                client,
-            })
-        }
-
-        /// Create a new test fixture without automatic login (for login-specific tests)
-        async fn new_without_auto_login() -> Result<Self, Box<dyn std::error::Error>> {
-            let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-            let tshark = capture.start()?;
-            sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
-
-            // Create client without login for login-specific tests
             let tcp_config = TcpClientConfig {
                 server_address: format!("{}:{}", SERVER_IP, SERVER_TCP_PORT),
                 ..Default::default()
             };
+
             let tcp_client = TcpClient::create(Arc::new(tcp_config))?;
             let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
             client.connect().await?;
+
+            if login {
+                client
+                    .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
+                    .await?;
+            }
 
             Ok(Self {
                 capture,
@@ -227,25 +217,6 @@ mod tests {
 
             Ok(packets)
         }
-    }
-
-    /// Helper function to create an IggyClient connected to the test server
-    async fn create_test_client() -> Result<IggyClient, IggyError> {
-        let tcp_config = TcpClientConfig {
-            server_address: format!("{}:{}", SERVER_IP, SERVER_TCP_PORT),
-            ..Default::default()
-        };
-
-        let tcp_client = TcpClient::create(Arc::new(tcp_config))?;
-        let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
-        client.connect().await?;
-
-        // Explicitly login with default root credentials
-        client
-            .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
-            .await?;
-
-        Ok(client)
     }
 
     /// Helper function to extract iggy packets from tshark output
@@ -381,7 +352,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        let mut fixture = TestFixture::new().await?;
+        let mut fixture = TestFixture::new(true).await?;
 
         fixture.client.ping().await?;
 
@@ -402,7 +373,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        let mut fixture = TestFixture::new_without_auto_login().await?;
+        let mut fixture = TestFixture::new(false).await?;
 
         fixture
             .client
@@ -430,7 +401,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        let mut fixture = TestFixture::new().await?;
+        let mut fixture = TestFixture::new(true).await?;
 
         // Create a test stream first
         let stream_id = 1u32;
