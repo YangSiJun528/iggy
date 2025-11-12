@@ -9,7 +9,8 @@ mod tests {
     use std::process::{Child, Command as ProcessCommand, Stdio};
     use std::str::FromStr;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::time::sleep;
 
     /// Default credentials for Iggy server
@@ -24,6 +25,9 @@ mod tests {
     const CAPTURE_START_WAIT_MS: u64 = 1000;
     const OPERATION_WAIT_SECS: u64 = 2;
     const CAPTURE_STOP_WAIT_MS: u64 = 500;
+
+    /// Atomic counter for generating unique file IDs
+    static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     /// Helper function to extract and parse iggy field values (returns Result)
     fn get_iggy_field<T>(iggy: &Value, field: &str) -> Result<T, String>
@@ -57,7 +61,15 @@ mod tests {
 
     impl TsharkCapture {
         fn new(ip: &str, port: u16) -> io::Result<Self> {
-            let file = format!("/tmp/iggy_test_{}.pcap", port);
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let pid = std::process::id();
+            let counter = FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+            let file = format!("/tmp/iggy_test_{}_{}_{}.pcap", timestamp, pid, counter);
+            let pcap_file = PathBuf::from(file);
 
             // Find dissector.lua in the workspace root
             let dissector_path = std::env::current_dir()?.join("dissector.lua");
@@ -72,7 +84,7 @@ mod tests {
             Ok(Self {
                 ip: ip.to_string(),
                 port,
-                pcap_file: PathBuf::from(file),
+                pcap_file,
                 dissector_path,
             })
         }
