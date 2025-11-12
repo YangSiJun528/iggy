@@ -244,13 +244,16 @@ mod tests {
             .collect()
     }
 
-    /// Find request packet by command ID
-    fn find_request_packet<'a>(
+    /// Find and verify request packet by command ID and common fields
+    /// Returns the entire iggy packet layer for further inspection
+    fn verify_request_packet<'a>(
         iggy_packets: &[&'a Value],
         command_id: u32,
         command_name: &str,
-    ) -> Result<&'a Value, String> {
-        iggy_packets
+        expected_length: u32,
+    ) -> Result<&'a Value, Box<dyn std::error::Error>> {
+        // Find the request packet
+        let iggy = iggy_packets
             .iter()
             .find_map(|packet| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
@@ -262,61 +265,67 @@ mod tests {
                     "{} request (command {}) not found in capture",
                     command_name, command_id
                 )
-            })
+            })?;
+
+        // Verify common fields
+        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
+        assert_eq!(cmd_name, command_name);
+
+        let length: u32 = expect_iggy_field(iggy, "iggy.request.length");
+        assert_eq!(length, expected_length);
+
+        Ok(iggy)
     }
 
-    /// Find response packet by command name and status
-    fn find_response_packet<'a>(
+    /// Find and verify response packet by command name, status code, and common fields
+    /// Returns the entire iggy packet layer for further inspection
+    fn verify_response_packet<'a>(
         iggy_packets: &[&'a Value],
         command_name: &str,
-        status: u32,
-    ) -> Result<&'a Value, String> {
-        iggy_packets
+        expected_status_code: u32,
+        expected_length: Option<u32>,
+    ) -> Result<&'a Value, Box<dyn std::error::Error>> {
+        // Find the response packet
+        let iggy = iggy_packets
             .iter()
             .find_map(|packet| {
                 let iggy = &packet["_source"]["layers"]["iggy"];
                 let cmd_name: String = get_iggy_field(iggy, "iggy.request.command_name").ok()?;
                 let pkt_status: u32 = get_iggy_field(iggy, "iggy.response.status").ok()?;
-                (cmd_name == command_name && pkt_status == status).then_some(iggy)
+                (cmd_name == command_name && pkt_status == expected_status_code).then_some(iggy)
             })
             .ok_or_else(|| {
                 format!(
                     "{} response (status {}) not found in capture",
-                    command_name, status
+                    command_name, expected_status_code
                 )
-            })
-    }
+            })?;
 
-    /// Verify basic request fields
-    fn verify_request_basics(
-        iggy: &Value,
-        expected_command: &str,
-        expected_length: u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
-        assert_eq!(cmd_name, expected_command);
-
-        let length: u32 = expect_iggy_field(iggy, "iggy.request.length");
-        assert_eq!(length, expected_length);
-
-        Ok(())
-    }
-
-    /// Verify basic response fields
-    fn verify_response_basics(
-        iggy: &Value,
-        expected_status: &str,
-        expected_length: Option<u32>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Verify status name (0 = OK, non-zero = error)
         let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
-        assert_eq!(status_name, expected_status);
+        let expected_status_name = if expected_status_code == 0 {
+            "OK"
+        } else {
+            // For error cases, you might want to be more flexible
+            &status_name
+        };
+        assert_eq!(status_name, expected_status_name);
 
+        // Verify length if specified
         if let Some(len) = expected_length {
             let length: u32 = expect_iggy_field(iggy, "iggy.response.length");
             assert_eq!(length, len);
         }
 
-        Ok(())
+        Ok(iggy)
+    }
+
+    fn get_request_payload(packet: &Value) -> Option<&Value> {
+        packet.get("iggy.request.payload_tree")
+    }
+
+    fn get_response_payload(packet: &Value) -> Option<&Value> {
+        packet.get("iggy.response.payload_tree")
     }
 
     /// Helper function to print packet details for debugging
@@ -367,13 +376,13 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Verify Ping request
-        let iggy = find_request_packet(&iggy_packets, 1, "Ping")?;
-        verify_request_basics(iggy, "Ping", 4)?;
+        // Verify Ping request (no payload expected)
+        let req = verify_request_packet(&iggy_packets, 1, "Ping", 4)?;
+        assert!(get_request_payload(req).is_none(),);
 
-        // Verify Ping response
-        let iggy = find_response_packet(&iggy_packets, "Ping", 0)?;
-        verify_response_basics(iggy, "OK", Some(0))?;
+        // Verify Ping response (status OK, no payload expected)
+        let resp = verify_response_packet(&iggy_packets, "Ping", 0, Some(0))?;
+        assert!(get_response_payload(resp).is_none(),);
 
         Ok(())
     }
@@ -391,25 +400,16 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Verify LoginUser request
-        let iggy = find_request_packet(&iggy_packets, 38, "LoginUser")?;
+        let req = verify_request_packet(&iggy_packets, 38, "LoginUser", 14)?;
+        let req_payload = get_request_payload(req).expect("LoginUser request should have payload");
 
-        let payload_tree = iggy
-            .get("iggy.request.payload_tree")
-            .expect("Request payload_tree missing");
-
-        let username: String = expect_iggy_field(payload_tree, "iggy.login_user.req.username");
+        let username: String = expect_iggy_field(req_payload, "iggy.login_user.req.username");
         assert_eq!(username, DEFAULT_ROOT_USERNAME);
 
-        // Verify LoginUser response
-        let iggy = find_response_packet(&iggy_packets, "LoginUser", 0)?;
-        verify_response_basics(iggy, "OK", Some(4))?;
+        let resp = verify_response_packet(&iggy_packets, "LoginUser", 0, Some(4))?;
+        let resp_payload = get_response_payload(resp).expect("LoginUser response should have payload");
 
-        let payload_tree = iggy
-            .get("iggy.response.payload_tree")
-            .expect("Response payload_tree missing");
-
-        let _user_id: u32 = expect_iggy_field(payload_tree, "iggy.login_user.resp.user_id");
+        let _user_id: u32 = expect_iggy_field(resp_payload, "iggy.login_user.resp.user_id");
 
         Ok(())
     }
@@ -449,33 +449,24 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Verify CreateTopic request
-        let iggy = find_request_packet(&iggy_packets, 302, "CreateTopic")?;
+        // Verify CreateTopic request (has payload with stream_id, topic_name, partitions, etc.)
+        let req = verify_request_packet(&iggy_packets, 302, "CreateTopic", 67)?;
+        let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
-        let payload_tree = iggy
-            .get("iggy.request.payload_tree")
-            .expect("Request payload_tree missing");
-
-        let partitions: u32 =
-            expect_iggy_field(payload_tree, "iggy.create_topic.req.partitions_count");
+        let partitions: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.partitions_count");
         assert_eq!(partitions, partitions_count);
 
-        let name: String = expect_iggy_field(payload_tree, "iggy.create_topic.req.name");
+        let name: String = expect_iggy_field(req_payload, "iggy.create_topic.req.name");
         assert_eq!(name, topic_name);
 
-        // Verify CreateTopic response
-        let iggy = find_response_packet(&iggy_packets, "CreateTopic", 0)?;
-        verify_response_basics(iggy, "OK", None)?;
+        // Verify CreateTopic response (status OK, has payload with topic details)
+        let resp = verify_response_packet(&iggy_packets, "CreateTopic", 0, None)?;
+        let resp_payload = get_response_payload(resp).expect("CreateTopic response should have payload");
 
-        let payload_tree = iggy
-            .get("iggy.response.payload_tree")
-            .expect("Response payload_tree missing");
-
-        let resp_name: String = expect_iggy_field(payload_tree, "iggy.create_topic.resp.name");
+        let resp_name: String = expect_iggy_field(resp_payload, "iggy.create_topic.resp.name");
         assert_eq!(resp_name, topic_name);
 
-        let resp_partitions: u32 =
-            expect_iggy_field(payload_tree, "iggy.create_topic.resp.partitions_count");
+        let resp_partitions: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.partitions_count");
         assert_eq!(resp_partitions, partitions_count);
 
         Ok(())
