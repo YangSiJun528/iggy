@@ -8,8 +8,8 @@ mod tests {
     use std::path::PathBuf;
     use std::process::{Child, Command as ProcessCommand, Stdio};
     use std::str::FromStr;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::time::sleep;
 
@@ -166,9 +166,8 @@ mod tests {
                 return Ok(Vec::new());
             }
 
-            let packets: Vec<Value> = serde_json::from_str(&json_str).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, e)
-            })?;
+            let packets: Vec<Value> = serde_json::from_str(&json_str)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
             Ok(packets)
         }
@@ -198,14 +197,11 @@ mod tests {
                 ..Default::default()
             };
 
-            let tcp_client = TcpClient::create(Arc::new(tcp_config))
-                .expect("Failed to create TCP client");
+            let tcp_client =
+                TcpClient::create(Arc::new(tcp_config)).expect("Failed to create TCP client");
             let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
 
-            Self {
-                capture,
-                client,
-            }
+            Self { capture, client }
         }
 
         /// Setup test fixture: start packet capture and connect client
@@ -352,8 +348,8 @@ mod tests {
                 println!("{}", json);
             } else if let Some(iggy) = packet["_source"]["layers"].get("iggy") {
                 println!("\nIggy Protocol:");
-                let json = serde_json::to_string_pretty(iggy)
-                    .unwrap_or_else(|_| "Error".to_string());
+                let json =
+                    serde_json::to_string_pretty(iggy).unwrap_or_else(|_| "Error".to_string());
                 println!("{}", json);
             }
         }
@@ -371,13 +367,39 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Verify Ping request (no payload expected)
+        // Verify Ping request
         let req = verify_request_packet(&iggy_packets, 1, "Ping", 4)?;
-        assert!(get_request_payload(req).is_none(),);
 
-        // Verify Ping response (status OK, no payload expected)
+        let command: u32 = expect_iggy_field(req, "iggy.request.command");
+        assert_eq!(command, 1);
+
+        let command_name: String = expect_iggy_field(req, "iggy.request.command_name");
+        assert_eq!(command_name, "Ping");
+
+        let length: u32 = expect_iggy_field(req, "iggy.request.length");
+        assert_eq!(length, 4);
+
+        assert!(
+            get_request_payload(req).is_none(),
+            "Ping request should not have payload"
+        );
+
+        // Verify Ping response
         let resp = verify_response_packet(&iggy_packets, "Ping", 0, Some(0))?;
-        assert!(get_response_payload(resp).is_none(),);
+
+        let status: u32 = expect_iggy_field(resp, "iggy.response.status");
+        assert_eq!(status, 0);
+
+        let status_name: String = expect_iggy_field(resp, "iggy.response.status_name");
+        assert_eq!(status_name, "OK");
+
+        let resp_length: u32 = expect_iggy_field(resp, "iggy.response.length");
+        assert_eq!(resp_length, 0);
+
+        assert!(
+            get_response_payload(resp).is_none(),
+            "Ping response should not have payload"
+        );
 
         Ok(())
     }
@@ -396,16 +418,48 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
+        // Verify LoginUser request
         let req = verify_request_packet(&iggy_packets, 38, "LoginUser", 27)?;
+
+        let command: u32 = expect_iggy_field(req, "iggy.request.command");
+        assert_eq!(command, 38);
+
+        let command_name: String = expect_iggy_field(req, "iggy.request.command_name");
+        assert_eq!(command_name, "LoginUser");
+
+        let length: u32 = expect_iggy_field(req, "iggy.request.length");
+        assert_eq!(length, 27);
+
         let req_payload = get_request_payload(req).expect("LoginUser request should have payload");
 
         let username: String = expect_iggy_field(req_payload, "iggy.login_user.req.username");
         assert_eq!(username, DEFAULT_ROOT_USERNAME);
 
-        let resp = verify_response_packet(&iggy_packets, "LoginUser", 0, Some(4))?;
-        let resp_payload = get_response_payload(resp).expect("LoginUser response should have payload");
+        let username_len: u32 =
+            expect_iggy_field(req_payload, "iggy.login_user.req.username_len");
+        assert_eq!(username_len, DEFAULT_ROOT_USERNAME.len() as u32);
 
-        let _user_id: u32 = expect_iggy_field(resp_payload, "iggy.login_user.resp.user_id");
+        let password_len: u32 =
+            expect_iggy_field(req_payload, "iggy.login_user.req.password_len");
+        assert_eq!(password_len, DEFAULT_ROOT_PASSWORD.len() as u32);
+
+        // Verify LoginUser response
+        let resp = verify_response_packet(&iggy_packets, "LoginUser", 0, Some(4))?;
+
+        let status: u32 = expect_iggy_field(resp, "iggy.response.status");
+        assert_eq!(status, 0);
+
+        let status_name: String = expect_iggy_field(resp, "iggy.response.status_name");
+        assert_eq!(status_name, "OK");
+
+        let resp_length: u32 = expect_iggy_field(resp, "iggy.response.length");
+        assert_eq!(resp_length, 4);
+
+        let resp_payload = get_response_payload(resp)
+            .expect("LoginUser response should have payload");
+
+        let user_id: u32 = expect_iggy_field(resp_payload, "iggy.login_user.resp.user_id");
+        assert!(user_id > 0, "User ID should be greater than 0");
 
         Ok(())
     }
@@ -446,25 +500,67 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_packets = extract_iggy_packets(&packets);
 
-        // Verify CreateTopic request (has payload with stream_id, topic_name, partitions, etc.)
+        // Verify CreateTopic request
         let req = verify_request_packet(&iggy_packets, 302, "CreateTopic", 47)?;
+
+        let command: u32 = expect_iggy_field(req, "iggy.request.command");
+        assert_eq!(command, 302);
+
+        let command_name: String = expect_iggy_field(req, "iggy.request.command_name");
+        assert_eq!(command_name, "CreateTopic");
+
+        let length: u32 = expect_iggy_field(req, "iggy.request.length");
+        assert_eq!(length, 47);
+
         let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
-        let partitions: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.partitions_count");
-        assert_eq!(partitions, partitions_count);
+        let stream_id_kind: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_kind");
+        assert_eq!(stream_id_kind, 1); // 1 = numeric identifier
+
+        let stream_id_length: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_length");
+        assert_eq!(stream_id_length, 4); // u32 = 4 bytes
+
+        // Note: stream_id_value is currently parsed as string in dissector, showing as "\u0001" for value 1
+        // This is a known limitation - the dissector should parse it as uint32 based on stream_id_kind
 
         let name: String = expect_iggy_field(req_payload, "iggy.create_topic.req.name");
         assert_eq!(name, topic_name);
 
-        // Verify CreateTopic response (status OK, has payload with topic details)
+        let name_len: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.name_len");
+        assert_eq!(name_len, topic_name.len() as u32);
+
+        let partitions: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.partitions_count");
+        assert_eq!(partitions, partitions_count);
+
+        // Verify CreateTopic response
         let resp = verify_response_packet(&iggy_packets, "CreateTopic", 0, None)?;
-        let resp_payload = get_response_payload(resp).expect("CreateTopic response should have payload");
+
+        let status: u32 = expect_iggy_field(resp, "iggy.response.status");
+        assert_eq!(status, 0);
+
+        let status_name: String = expect_iggy_field(resp, "iggy.response.status_name");
+        assert_eq!(status_name, "OK");
+
+        let resp_payload = get_response_payload(resp)
+            .expect("CreateTopic response should have payload");
+
+        let resp_topic_id: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.topic_id");
+        assert!(resp_topic_id > 0, "Topic ID should be greater than 0");
 
         let resp_name: String = expect_iggy_field(resp_payload, "iggy.create_topic.resp.name");
         assert_eq!(resp_name, topic_name);
 
+        let resp_name_len: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.name_len");
+        assert_eq!(resp_name_len, topic_name.len() as u32);
+
         let resp_partitions: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.partitions_count");
         assert_eq!(resp_partitions, partitions_count);
+
+        let resp_messages_count: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.messages_count");
+        assert_eq!(resp_messages_count, 0);
+
+        let resp_size: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.size");
+        assert_eq!(resp_size, 0);
 
         Ok(())
     }
