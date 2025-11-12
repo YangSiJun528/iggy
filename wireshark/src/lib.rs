@@ -23,7 +23,7 @@ mod tests {
 
     /// Timing constants for packet capture tests
     const CAPTURE_START_WAIT_MS: u64 = 1000;
-    const OPERATION_WAIT_SECS: u64 = 2;
+    const OPERATION_WAIT_MS: u64 = 2000;
     const CAPTURE_STOP_WAIT_MS: u64 = 500;
 
     /// Atomic counter for generating unique file IDs
@@ -225,7 +225,7 @@ mod tests {
 
         /// Stop packet capture and analyze captured packets
         async fn stop_and_analyze(&mut self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
-            sleep(Duration::from_secs(OPERATION_WAIT_SECS)).await;
+            sleep(Duration::from_secs(OPERATION_WAIT_MS)).await;
 
             self.capture.stop();
             sleep(Duration::from_millis(CAPTURE_STOP_WAIT_MS)).await;
