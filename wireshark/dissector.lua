@@ -114,7 +114,8 @@ local COMMANDS = {
             request = {
                 stream_id_kind = ProtoField.uint8("iggy.create_topic.req.stream_id_kind", "Stream ID Kind", base.DEC),
                 stream_id_length = ProtoField.uint8("iggy.create_topic.req.stream_id_length", "Stream ID Length", base.DEC),
-                stream_id_value = ProtoField.string("iggy.create_topic.req.stream_id_value", "Stream ID Value"),
+                stream_id_value_numeric = ProtoField.uint32("iggy.create_topic.req.stream_id_value_numeric", "Stream ID Value (Numeric)", base.DEC),
+                stream_id_value_string = ProtoField.string("iggy.create_topic.req.stream_id_value_string", "Stream ID Value (String)"),
                 topic_id = ProtoField.uint32("iggy.create_topic.req.topic_id", "Topic ID", base.DEC),
                 partitions_count = ProtoField.uint32("iggy.create_topic.req.partitions_count", "Partitions Count", base.DEC),
                 compression_algorithm = ProtoField.uint8("iggy.create_topic.req.compression_algorithm", "Compression Algorithm", base.DEC),
@@ -143,12 +144,31 @@ local COMMANDS = {
             local f = self.fields.request
 
             -- Stream ID (Identifier: kind + length + value)
-            tree:add(f.stream_id_kind, buffer(offset, 1))
+            local stream_id_kind = buffer(offset, 1):uint()
+            local kind_item = tree:add(f.stream_id_kind, buffer(offset, 1))
+
+            -- Add description for stream_id_kind
+            if stream_id_kind == 1 then
+                kind_item:set_generated()
+                kind_item:append_text(" (Numeric)")
+            elseif stream_id_kind == 2 then
+                kind_item:set_generated()
+                kind_item:append_text(" (String)")
+            end
             offset = offset + 1
+
             local stream_id_length = buffer(offset, 1):uint()
             tree:add(f.stream_id_length, buffer(offset, 1))
             offset = offset + 1
-            tree:add(f.stream_id_value, buffer(offset, stream_id_length))
+
+            -- Parse stream_id_value based on kind (1 = numeric, 2 = string)
+            if stream_id_kind == 1 then
+                -- Numeric identifier (u32 little-endian)
+                tree:add_le(f.stream_id_value_numeric, buffer(offset, stream_id_length))
+            else
+                -- String identifier
+                tree:add(f.stream_id_value_string, buffer(offset, stream_id_length))
+            end
             offset = offset + stream_id_length
 
             -- Topic ID (u32 le, 0 if None)

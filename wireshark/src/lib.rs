@@ -514,14 +514,14 @@ mod tests {
 
         let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
-        let stream_id_kind: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_kind");
-        assert_eq!(stream_id_kind, 1); // 1 = numeric identifier
+        let req_stream_id_kind: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_kind");
+        assert_eq!(req_stream_id_kind, 1); // 1 = numeric identifier
 
-        let stream_id_length: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_length");
-        assert_eq!(stream_id_length, 4); // u32 = 4 bytes
+        let req_stream_id_length: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_length");
+        assert_eq!(req_stream_id_length, 4); // u32 = 4 bytes
 
-        // Note: stream_id_value is currently parsed as string in dissector, showing as "\u0001" for value 1
-        // This is a known limitation - the dissector should parse it as uint32 based on stream_id_kind
+        let req_stream_id_value: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_value_numeric");
+        assert_eq!(req_stream_id_value, stream_id);
 
         let name: String = expect_iggy_field(req_payload, "iggy.create_topic.req.name");
         assert_eq!(name, topic_name);
