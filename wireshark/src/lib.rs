@@ -77,7 +77,7 @@ mod tests {
             }
         }
 
-        fn start(&self) -> io::Result<Child> {
+        fn capture(&self) -> io::Result<Child> {
             // Find dissector.lua in the workspace root
             let dissector_path = std::env::current_dir()?.join("dissector.lua");
 
@@ -180,7 +180,7 @@ mod tests {
     impl TestFixture {
         /// Create a new test fixture (does not start capture or connect client)
         ///
-        /// Call `start()` to begin packet capture and connect the client.
+        /// Call `setup()` to begin packet capture and connect the client.
         fn new() -> Self {
             let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT);
 
@@ -200,10 +200,10 @@ mod tests {
             }
         }
 
-        /// Start packet capture and connect client
-        async fn start(&mut self, login: bool) -> Result<(), Box<dyn std::error::Error>> {
+        /// Setup test fixture: start packet capture and connect client
+        async fn setup(&mut self, login: bool) -> Result<(), Box<dyn std::error::Error>> {
             // Start tshark capture
-            let tshark = self.capture.start()?;
+            let tshark = self.capture.capture()?;
             self.tshark_process = Some(tshark);
             sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
 
@@ -376,7 +376,7 @@ mod tests {
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestFixture::new();
-        fixture.start(true).await?;
+        fixture.setup(true).await?;
 
         fixture.client.ping().await?;
 
@@ -398,7 +398,7 @@ mod tests {
     #[ignore]
     async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestFixture::new();
-        fixture.start(false).await?;
+        fixture.setup(false).await?;
 
         fixture
             .client
@@ -427,7 +427,7 @@ mod tests {
     #[ignore]
     async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestFixture::new();
-        fixture.start(true).await?;
+        fixture.setup(true).await?;
 
         // Create a test stream first
         let stream_id = 1u32;
