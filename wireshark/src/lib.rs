@@ -56,6 +56,7 @@ mod tests {
         ip: String,
         port: u16,
         pcap_file: PathBuf,
+        tshark_process: Option<Child>,
     }
 
     impl TsharkCapture {
@@ -74,10 +75,11 @@ mod tests {
                 ip: ip.to_string(),
                 port,
                 pcap_file,
+                tshark_process: None,
             }
         }
 
-        fn capture(&self) -> io::Result<Child> {
+        fn capture(&mut self) -> io::Result<()> {
             // Find dissector.lua in the workspace root
             let dissector_path = std::env::current_dir()?.join("dissector.lua");
 
@@ -110,7 +112,15 @@ mod tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
-            command.spawn()
+            let process = command.spawn()?;
+            self.tshark_process = Some(process);
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            if let Some(mut process) = self.tshark_process.take() {
+                let _ = process.kill();
+            }
         }
 
         fn analyze(&self) -> io::Result<Vec<Value>> {
@@ -173,7 +183,6 @@ mod tests {
     /// Test fixture that manages tshark capture and client lifecycle
     struct TestFixture {
         capture: TsharkCapture,
-        tshark_process: Option<Child>,
         client: IggyClient,
     }
 
@@ -195,7 +204,6 @@ mod tests {
 
             Self {
                 capture,
-                tshark_process: None,
                 client,
             }
         }
@@ -203,8 +211,7 @@ mod tests {
         /// Setup test fixture: start packet capture and connect client
         async fn setup(&mut self, login: bool) -> Result<(), Box<dyn std::error::Error>> {
             // Start tshark capture
-            let tshark = self.capture.capture()?;
-            self.tshark_process = Some(tshark);
+            self.capture.capture()?;
             sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
 
             // Connect client
@@ -224,9 +231,7 @@ mod tests {
         async fn stop_and_analyze(&mut self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
             sleep(Duration::from_secs(OPERATION_WAIT_SECS)).await;
 
-            if let Some(mut tshark) = self.tshark_process.take() {
-                let _ = tshark.kill();
-            }
+            self.capture.stop();
             sleep(Duration::from_millis(CAPTURE_STOP_WAIT_MS)).await;
 
             let packets = self.capture.analyze()?;
