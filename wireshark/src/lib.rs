@@ -56,11 +56,10 @@ mod tests {
         ip: String,
         port: u16,
         pcap_file: PathBuf,
-        dissector_path: PathBuf,
     }
 
     impl TsharkCapture {
-        fn new(ip: &str, port: u16) -> io::Result<Self> {
+        fn new(ip: &str, port: u16) -> Self {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -71,6 +70,14 @@ mod tests {
             let file = format!("/tmp/iggy_test_{}_{}_{}.pcap", timestamp, pid, counter);
             let pcap_file = PathBuf::from(file);
 
+            Self {
+                ip: ip.to_string(),
+                port,
+                pcap_file,
+            }
+        }
+
+        fn start(&self) -> io::Result<Child> {
             // Find dissector.lua in the workspace root
             let dissector_path = std::env::current_dir()?.join("dissector.lua");
 
@@ -81,16 +88,7 @@ mod tests {
                 ));
             }
 
-            Ok(Self {
-                ip: ip.to_string(),
-                port,
-                pcap_file,
-                dissector_path,
-            })
-        }
-
-        fn start(&self) -> io::Result<Child> {
-            let lua_script_arg = format!("lua_script:{}", self.dissector_path.display());
+            let lua_script_arg = format!("lua_script:{}", dissector_path.display());
             let port_config_arg = format!("iggy.server_port:{}", self.port);
             let filter_arg = format!("tcp and host {} and port {}", self.ip, self.port);
 
@@ -116,7 +114,17 @@ mod tests {
         }
 
         fn analyze(&self) -> io::Result<Vec<Value>> {
-            let lua_script_arg = format!("lua_script:{}", self.dissector_path.display());
+            // Find dissector.lua in the workspace root
+            let dissector_path = std::env::current_dir()?.join("dissector.lua");
+
+            if !dissector_path.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Dissector not found at: {}", dissector_path.display()),
+                ));
+            }
+
+            let lua_script_arg = format!("lua_script:{}", dissector_path.display());
             let port_config_arg = format!("iggy.server_port:{}", self.port);
 
             let output = ProcessCommand::new("tshark")
@@ -170,31 +178,46 @@ mod tests {
     }
 
     impl TestFixture {
-        async fn new(login: bool) -> Result<Self, Box<dyn std::error::Error>> {
-            let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT)?;
-            let tshark = capture.start()?;
-            sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
+        /// Create a new test fixture (does not start capture or connect client)
+        ///
+        /// Call `start()` to begin packet capture and connect the client.
+        fn new() -> Self {
+            let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT);
 
             let tcp_config = TcpClientConfig {
                 server_address: format!("{}:{}", SERVER_IP, SERVER_TCP_PORT),
                 ..Default::default()
             };
 
-            let tcp_client = TcpClient::create(Arc::new(tcp_config))?;
+            let tcp_client = TcpClient::create(Arc::new(tcp_config))
+                .expect("Failed to create TCP client");
             let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
-            client.connect().await?;
 
+            Self {
+                capture,
+                tshark_process: None,
+                client,
+            }
+        }
+
+        /// Start packet capture and connect client
+        async fn start(&mut self, login: bool) -> Result<(), Box<dyn std::error::Error>> {
+            // Start tshark capture
+            let tshark = self.capture.start()?;
+            self.tshark_process = Some(tshark);
+            sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
+
+            // Connect client
+            self.client.connect().await?;
+
+            // Login if requested
             if login {
-                client
+                self.client
                     .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
                     .await?;
             }
 
-            Ok(Self {
-                capture,
-                tshark_process: Some(tshark),
-                client,
-            })
+            Ok(())
         }
 
         /// Stop packet capture and analyze captured packets
@@ -352,7 +375,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        let mut fixture = TestFixture::new(true).await?;
+        let mut fixture = TestFixture::new();
+        fixture.start(true).await?;
 
         fixture.client.ping().await?;
 
@@ -373,7 +397,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        let mut fixture = TestFixture::new(false).await?;
+        let mut fixture = TestFixture::new();
+        fixture.start(false).await?;
 
         fixture
             .client
@@ -401,7 +426,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
-        let mut fixture = TestFixture::new(true).await?;
+        let mut fixture = TestFixture::new();
+        fixture.start(true).await?;
 
         // Create a test stream first
         let stream_id = 1u32;
