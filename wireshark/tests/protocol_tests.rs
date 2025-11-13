@@ -460,20 +460,24 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
 
     // Create a test stream first (auto-assign ID)
     let stream_name = "test_create_topic_stream";
+    let topic_name = "test_create_topic";
+
+    // Delete existing stream if it exists (ignore error if not found)
+    let _ = fixture.client.delete_stream(&Identifier::named(stream_name)?).await;
+
     fixture
         .client
         .create_stream(stream_name, None)
         .await?;
 
     // Create a topic using stream name
-    let topic_name = "test_create_topic";
     let partitions_count = 3u32;
 
     fixture
         .client
         .create_topic(
             &Identifier::named(stream_name)?,
-            &topic_name,
+            topic_name,
             partitions_count,
             CompressionAlgorithm::None,
             None, // replication_factor
@@ -482,6 +486,9 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
             MaxTopicSize::ServerDefault,
         )
         .await?;
+
+    // Cleanup: delete the created stream (and its topics) before stopping capture
+    fixture.client.delete_stream(&Identifier::named(stream_name)?).await?;
 
     let packets = fixture.stop_and_analyze().await?;
     let iggy_layers = extract_iggy_layers(&packets);
@@ -538,9 +545,6 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
         let resp_size: u32 = expect_field(resp_payload, "iggy.create_topic.resp.size");
         assert_eq!(resp_size, 0);
     }
-
-    // Cleanup: delete the created stream (and its topics)
-    fixture.client.delete_stream(&Identifier::named(stream_name)?).await?;
 
     Ok(())
 }
