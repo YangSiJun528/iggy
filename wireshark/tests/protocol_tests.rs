@@ -60,6 +60,11 @@ fn status_code_to_name(status_code: u32) -> &'static str {
     }
 }
 
+/// Check if tshark is available in the system
+fn check_tshark_available() -> bool {
+    ProcessCommand::new("tshark").arg("--version").output().is_ok()
+}
+
 /// Helper struct to manage tshark packet capture
 struct TsharkCapture {
     ip: String,
@@ -196,10 +201,11 @@ struct TestFixture {
 }
 
 impl TestFixture {
-    /// Create a new test fixture (does not start capture or connect client)
-    ///
-    /// Call `setup()` to begin packet capture and connect the client.
     fn new() -> Self {
+        if !check_tshark_available() {
+            panic!("tshark is required but not available.");
+        }
+
         let capture = TsharkCapture::new(SERVER_IP, SERVER_TCP_PORT);
 
         let tcp_config = TcpClientConfig {
