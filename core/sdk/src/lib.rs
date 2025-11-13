@@ -26,3 +26,10 @@ pub mod prelude;
 pub mod quic;
 pub mod stream_builder;
 pub mod tcp;
+
+// Re-export commonly used types at the top level for easier access
+pub use iggy_common::{
+    AutoLogin, Credentials, HttpClientConfig, HttpClientConfigBuilder, QuicClientConfig,
+    QuicClientConfigBuilder, TcpClientConfig, TcpClientConfigBuilder, TransportProtocol,
+};
+pub use prelude::{IggyClient, IggyClientBuilder};
