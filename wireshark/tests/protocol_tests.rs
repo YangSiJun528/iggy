@@ -183,7 +183,9 @@ impl TsharkCapture {
 
 impl Drop for TsharkCapture {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.pcap_file);
+        if let Err(e) = fs::remove_file(&self.pcap_file) {
+            eprintln!("Warning: Failed to remove pcap file {}: {}", self.pcap_file.display(), e);
+        }
     }
 }
 
@@ -234,6 +236,9 @@ impl TestFixture {
     /// Stop packet capture and analyze captured packets
     async fn stop_and_analyze(&mut self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         sleep(Duration::from_millis(OPERATION_WAIT_MS)).await;
+
+        // Disconnect client before stopping capture
+        self.client.disconnect().await?;
 
         self.capture.stop();
         sleep(Duration::from_millis(CAPTURE_STOP_WAIT_MS)).await;
