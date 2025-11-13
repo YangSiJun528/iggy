@@ -327,6 +327,51 @@ local STATUS_CODES = {
 }
 
 ----------------------------------------
+-- TCP Desegmentation Helper
+-- Simplifies buffer reading and automatic desegmentation
+----------------------------------------
+local function msg_consumer(buf, pinfo)
+    local obj = {
+        msg_offset = 0,      -- Current message start position
+        msg_taken = 0,       -- Bytes consumed from current message
+        not_enough = false,  -- Flag indicating insufficient data
+    }
+
+    -- Move to next message
+    obj.next_msg = function()
+        obj.msg_offset = obj.msg_offset + obj.msg_taken
+        obj.msg_taken = 0
+    end
+
+    -- Take next n bytes from buffer
+    -- Returns TvbRange if successful, nil if not enough data
+    obj.take_next = function(n)
+        if obj.not_enough then
+            return nil  -- Already insufficient
+        end
+
+        local remaining = buf:len() - (obj.msg_offset + obj.msg_taken)
+        if remaining < n then
+            pinfo.desegment_offset = obj.msg_offset
+            pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+            obj.not_enough = true
+            return nil
+        end
+
+        local data = buf:range(obj.msg_offset + obj.msg_taken, n)
+        obj.msg_taken = obj.msg_taken + n
+        return data
+    end
+
+    -- Get TvbRange for current message
+    obj.current_msg_buf = function()
+        return buf:range(obj.msg_offset, obj.msg_taken)
+    end
+
+    return obj
+end
+
+----------------------------------------
 -- Request-Response Tracker Module
 -- Handles request-response matching for pipelined protocols using Wireshark's Conversation API
 -- Requires Wireshark 4.6+ with Conversation API support
@@ -432,38 +477,42 @@ local request_tracker = ReqRespTracker.new(iggy)
 function iggy.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol:set("IGGY")
 
-    local buflen = buffer:len()
     local server_port = iggy.prefs.server_port
     local is_request = (pinfo.dst_port == server_port)
     local is_response = (pinfo.src_port == server_port)
     local cf = common_fields -- Shorthand for common fields
 
     ----------------------------------------
-    -- TCP Desegmentation: Ensure we have complete packet
+    -- TCP Desegmentation with msg_consumer
     ----------------------------------------
+    local consumer = msg_consumer(buffer, pinfo)
 
-    -- Step 1: Need at least 8 bytes for header
-    if buflen < 8 then
-        pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
-        return
-    end
+    -- Read header (8 bytes total)
+    local header1 = consumer.take_next(4)  -- LENGTH or STATUS
+    if not header1 then return end
 
-    -- Step 2: Parse header and calculate total packet size
-    local total_len
+    local header2 = consumer.take_next(4)  -- CODE or LENGTH
+    if not header2 then return end
+
+    -- Calculate total message size and read payload
+    local total_len, payload_len, length_field, status_or_command
     if is_request then
         -- Request format: LENGTH(4) + CODE(4) + PAYLOAD(N)
-        local length_field = buffer(0, 4):le_uint()
+        length_field = header1:le_uint()
         total_len = 4 + length_field
+        payload_len = length_field - 4  -- Subtract command code size
     elseif is_response then
         -- Response format: STATUS(4) + LENGTH(4) + PAYLOAD(N)
-        local length_field = buffer(4, 4):le_uint()
+        length_field = header2:le_uint()
         total_len = 8 + length_field
+        payload_len = length_field
     end
 
-    -- Request more data if needed
-    if buflen < total_len then
-        pinfo.desegment_len = total_len - buflen
-        return
+    -- Read payload if exists
+    local payload_buf = nil
+    if payload_len > 0 then
+        payload_buf = consumer.take_next(payload_len)
+        if not payload_buf then return end
     end
 
     ----------------------------------------
@@ -471,20 +520,19 @@ function iggy.dissector(buffer, pinfo, tree)
     ----------------------------------------
     local HEADER_SIZE = 8
     local payload_offset = HEADER_SIZE
-    local payload_len = total_len - HEADER_SIZE
 
     local status, err = pcall(function()
         if is_request then
             -- Request dissection
-            local length = buffer(0, 4):le_uint()
-            local command_code = buffer(4, 4):le_uint()
+            local length = header1:le_uint()
+            local command_code = header2:le_uint()
 
-            local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Request")
+            local subtree = tree:add(iggy, consumer.current_msg_buf(), "Iggy Protocol - Request")
             subtree:add(cf.message_type, "Request"):set_generated()
 
             -- Length and command code
-            subtree:add_le(cf.req_length, buffer(0, 4))
-            subtree:add_le(cf.req_command, buffer(4, 4))
+            subtree:add_le(cf.req_length, header1)
+            subtree:add_le(cf.req_command, header2)
 
             -- Early return for unimplemented commands
             local command_info = COMMANDS[command_code]
@@ -507,8 +555,8 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add(cf.req_command_name, command_name):set_generated()
 
             -- Payload
-            if payload_len > 0 then
-                local payload_tree = subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
+            if payload_len > 0 and payload_buf then
+                local payload_tree = subtree:add(cf.req_payload, payload_buf)
                 command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
             end
 
@@ -519,15 +567,15 @@ function iggy.dissector(buffer, pinfo, tree)
             pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
         elseif is_response then
             -- Response dissection
-            local status_code = buffer(0, 4):le_uint()
-            local length = buffer(4, 4):le_uint()
+            local status_code = header1:le_uint()
+            local length = header2:le_uint()
 
-            local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Response")
+            local subtree = tree:add(iggy, consumer.current_msg_buf(), "Iggy Protocol - Response")
             subtree:add(cf.message_type, "Response"):set_generated()
 
             -- Status code and length
-            subtree:add_le(cf.resp_status, buffer(0, 4))
-            subtree:add_le(cf.resp_length, buffer(4, 4))
+            subtree:add_le(cf.resp_status, header1)
+            subtree:add_le(cf.resp_length, header2)
 
             -- Status name
             local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
@@ -573,8 +621,8 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add(cf.req_command_name, command_name):set_generated()
 
             -- Payload (only for status_code is 0(OK))
-            if payload_len > 0 and status_code == 0 then
-                local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
+            if payload_len > 0 and status_code == 0 and payload_buf then
+                local payload_tree = subtree:add(cf.resp_payload, payload_buf)
                 command_info.response_payload_dissector(command_info, buffer, payload_tree, payload_offset)
             end
 
@@ -594,7 +642,7 @@ function iggy.dissector(buffer, pinfo, tree)
         subtree:add_proto_expert_info(ef_dissection_error,
             string.format("Error: %s", err))
         pinfo.cols.info:set("Dissection error")
-        return buflen
+        return buffer:len()
     end
 
     return total_len
