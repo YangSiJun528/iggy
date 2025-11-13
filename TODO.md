@@ -247,4 +247,9 @@ lua 구현 마지막으로 정리하면서 공부하고 + 다듬기
 set_generated() << 이거 Lua로 하면 Wireshark GUI 만 그렇게 보이고, tshark나 그런데서는 실제로 분석한 값만 보임.
 근데 그게 맞긴 하지.
 
+근데 그렇게 따지면, `"iggy.request.command_name": "LoginUser",`나 `"iggy.response.status_name": "OK"`가 없어야 하는게 맞는데
+이거 없으면 테스트를 못함;
+
+이것도 따지고 보면 파생 값이라 빼는게 맞는거 같은데, 그래도 있는게 맞나?
+
 --------
