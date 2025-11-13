@@ -225,7 +225,7 @@ mod tests {
 
         /// Stop packet capture and analyze captured packets
         async fn stop_and_analyze(&mut self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
-            sleep(Duration::from_secs(OPERATION_WAIT_MS)).await;
+            sleep(Duration::from_millis(OPERATION_WAIT_MS)).await;
 
             self.capture.stop();
             sleep(Duration::from_millis(CAPTURE_STOP_WAIT_MS)).await;
