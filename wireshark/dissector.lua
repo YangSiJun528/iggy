@@ -486,17 +486,19 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add_le(cf.req_length, buffer(0, 4))
             subtree:add_le(cf.req_command, buffer(4, 4))
 
-            -- Early return for unknown commands
+            -- Early return for unimplemented commands
             local command_info = COMMANDS[command_code]
             if not command_info then
-                local unknown_name = "Unknown"
-                subtree:add(cf.req_command_name, unknown_name):set_generated()
+                local command_name = string.format("Unimplemented (%d)", command_code)
+                subtree:add(cf.req_command_name, command_name):set_generated()
 
                 if payload_len > 0 then
                     subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
                 end
 
-                pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", unknown_name, command_code, length))
+                request_tracker:record_request(pinfo, command_code)
+
+                pinfo.cols.info:set(string.format("Request: %s (length=%d)", command_name, length))
                 return
             end
 
@@ -542,18 +544,26 @@ function iggy.dissector(buffer, pinfo, tree)
                 subtree:add(cf.request_frame, request_frame_num)
             end
 
-            -- Early return for unknown commands (no matching request or unimplemented command)
+            -- Early return for unimplemented commands (no matching request or unimplemented command)
             if not command_info then
-                local unknown_name = "Unknown"
+                local command_name
+                if command_code then
+                    command_name = string.format("Unimplemented (%d)", command_code)
+                else
+                    command_name = "No matching request"
+                end
+
+                subtree:add(cf.req_command_name, command_name):set_generated()
+
                 if payload_len > 0 then
                     subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
                 end
 
                 if status_code == 0 then
-                    pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", unknown_name, length))
+                    pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
                 else
                     pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
-                        unknown_name, status_name, status_code, length))
+                        command_name, status_name, status_code, length))
                 end
                 return
             end
