@@ -9892,9 +9892,8 @@ dependencies = [
 
 [[package]]
 name = "wireshark"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
- "futures-util",
  "iggy",
  "iggy_common",
  "serde_json",

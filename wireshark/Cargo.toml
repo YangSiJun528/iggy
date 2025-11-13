@@ -1,7 +1,7 @@
 [package]
 name = "wireshark"
-version = "0.1.0"
-edition = "2021"
+version = "0.0.1"
+edition = "2024"
 
 [features]
 protocol-tests = []
@@ -12,7 +12,6 @@ path = "tests/protocol_tests.rs"
 required-features = ["protocol-tests"]
 
 [dependencies]
-futures-util = { workspace = true }
 iggy = { workspace = true }
 iggy_common = { workspace = true }
 serde_json = { workspace = true }
