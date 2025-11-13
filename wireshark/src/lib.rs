@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use iggy::prelude::*;
-    use iggy_common::IggyError;
+    use iggy_common::{IggyError, PING_CODE, LOGIN_USER_CODE, CREATE_TOPIC_CODE};
     use serde_json::Value;
     use std::fmt::Display;
     use std::fs;
@@ -383,7 +383,7 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_layers = extract_iggy_layers(&packets);
 
-        let (req, resp) = find_request_response(&iggy_layers, 1)?;
+        let (req, resp) = find_request_response(&iggy_layers, PING_CODE)?;
 
         // Verify Ping request
         {
@@ -414,7 +414,7 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_layers = extract_iggy_layers(&packets);
 
-        let (req, resp) = find_request_response(&iggy_layers, 38)?;
+        let (req, resp) = find_request_response(&iggy_layers, LOGIN_USER_CODE)?;
 
         // Verify LoginUser request
         {
@@ -480,7 +480,7 @@ mod tests {
         let packets = fixture.stop_and_analyze().await?;
         let iggy_layers = extract_iggy_layers(&packets);
 
-        let (req, resp) = find_request_response(&iggy_layers, 302)?;
+        let (req, resp) = find_request_response(&iggy_layers, CREATE_TOPIC_CODE)?;
 
         // Verify CreateTopic request
         {
