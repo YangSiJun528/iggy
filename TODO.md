@@ -248,3 +248,24 @@ set_generated() << ~~이거 Lua로 하면 Wireshark GUI 만 그렇게 보이고,
 GUI에서 회색으로 보이고, tshark에선 그냥 보임.
 
 --------
+
+⏺ wireshark 크레이트의 protocol_tests만 실행하는 방법
+
+빌드만 (실행 안 함):
+cargo test -p wireshark --features protocol-tests --no-run
+
+빌드 + 실행:
+cargo test -p wireshark --features protocol-tests
+
+특정 테스트 하나만 실행:
+cargo test -p wireshark --features protocol-tests test_ping_dissection
+
+다른 워크스페이스 멤버는 제외하고 wireshark만 빌드:
+cargo build -p wireshark --tests --features protocol-tests
+
+-p wireshark (또는 --package wireshark)가 핵심입니다. 이렇게 하면
+워크스페이스의 다른 크레이트들은 무시하고 wireshark만 타겟팅합니다.
+
+----
+
+
