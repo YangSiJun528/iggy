@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use iggy::prelude::*;
-    use iggy_common::{IggyError, PING_CODE, LOGIN_USER_CODE, CREATE_TOPIC_CODE};
+    use iggy_common::IggyError;
     use serde_json::Value;
     use std::fmt::Display;
     use std::fs;
@@ -326,8 +326,8 @@ mod tests {
         expected_status_code: u32,
         expected_length: u32,
     ) {
-        // Verify command name is valid
-        let cmd_name: String = expect_field(iggy, "iggy.request.command_name");
+        // Verify command name field exists (validated by dissector)
+        let _cmd_name: String = expect_field(iggy, "iggy.request.command_name");
 
         // Verify status code
         let status: u32 = expect_field(iggy, "iggy.response.status");
@@ -446,30 +446,28 @@ mod tests {
         Ok(())
     }
 
-    // 로컬 데이터에 토픽 있으면 302 에러남
     #[tokio::test]
     #[ignore]
     async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = TestFixture::new();
         fixture.start(true).await?;
 
-        // Create a test stream first
-        let stream_id = 1u32;
-        let stream_name = "test_stream";
+        // Create a test stream first (auto-assign ID)
+        let stream_name = "test_create_topic_stream";
         fixture
             .client
-            .create_stream(stream_name, Some(stream_id))
+            .create_stream(stream_name, None)
             .await?;
 
-        // Create a topic
-        let topic_name = "test_topic";
+        // Create a topic using stream name
+        let topic_name = "test_create_topic";
         let partitions_count = 3u32;
 
         fixture
             .client
             .create_topic(
-                &Identifier::numeric(stream_id)?,
-                topic_name,
+                &Identifier::named(stream_name)?,
+                &topic_name,
                 partitions_count,
                 CompressionAlgorithm::None,
                 None, // replication_factor
@@ -486,18 +484,18 @@ mod tests {
 
         // Verify CreateTopic request
         {
-            verify_request_packet(req, 47);
+            verify_request_packet(req, 74);
 
             let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
             let req_stream_id_kind: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_kind");
-            assert_eq!(req_stream_id_kind, IdKind::Numeric.as_code() as u32);
+            assert_eq!(req_stream_id_kind, IdKind::String.as_code() as u32);
 
             let req_stream_id_length: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_length");
-            assert_eq!(req_stream_id_length, 4);
+            assert_eq!(req_stream_id_length, stream_name.len() as u32);
 
-            let req_stream_id_value: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_value_numeric");
-            assert_eq!(req_stream_id_value, stream_id);
+            let req_stream_id_value: String = expect_field(req_payload, "iggy.create_topic.req.stream_id_value_string");
+            assert_eq!(req_stream_id_value, stream_name);
 
             let name: String = expect_field(req_payload, "iggy.create_topic.req.name");
             assert_eq!(name, topic_name);
@@ -511,7 +509,7 @@ mod tests {
 
         // Verify CreateTopic response
         {
-            verify_response_packet(resp, 0, 0);
+            verify_response_packet(resp, 0, 188);
 
             let resp_payload = get_response_payload(resp)
                 .expect("CreateTopic response should have payload");
@@ -534,6 +532,9 @@ mod tests {
             let resp_size: u32 = expect_field(resp_payload, "iggy.create_topic.resp.size");
             assert_eq!(resp_size, 0);
         }
+
+        // Cleanup: delete the created stream (and its topics)
+        fixture.client.delete_stream(&Identifier::named(stream_name)?).await?;
 
         Ok(())
     }
