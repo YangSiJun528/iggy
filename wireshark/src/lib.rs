@@ -212,8 +212,8 @@ mod tests {
                 ..Default::default()
             };
 
-            let tcp_client =
-                TcpClient::create(Arc::new(tcp_config)).expect("Failed to create TCP client");
+            let tcp_client = TcpClient::create(Arc::new(tcp_config))
+                .expect("Failed to create TCP client");
             let client = IggyClient::new(ClientWrapper::Tcp(tcp_client));
 
             Self { capture, client }
@@ -329,13 +329,10 @@ mod tests {
     fn verify_response_packet(
         iggy: &Value,
         expected_status_code: u32,
-        expected_length: Option<u32>,
+        expected_length: u32,
     ) {
         // Verify command name is valid
         let cmd_name: String = expect_field(iggy, "iggy.request.command_name");
-        // Just verify it's a valid command name by checking if we can look it up
-        // (the name itself was already verified during request packet processing)
-        let _ = cmd_name; // We trust the command_name from dissector
 
         // Verify status code
         let status: u32 = expect_field(iggy, "iggy.response.status");
@@ -347,10 +344,8 @@ mod tests {
         assert_eq!(status_name, expected_status_name);
 
         // Verify length if specified
-        if let Some(len) = expected_length {
-            let length: u32 = expect_field(iggy, "iggy.response.length");
-            assert_eq!(length, len);
-        }
+        let length: u32 = expect_field(iggy, "iggy.response.length");
+        assert_eq!(length, expected_length);
     }
 
     fn get_request_payload(packet: &Value) -> Option<&Value> {
@@ -398,19 +393,13 @@ mod tests {
         // Verify Ping request
         {
             verify_request_packet(req, 4);
-            assert!(
-                get_request_payload(req).is_none(),
-                "Ping request should not have payload"
-            );
+            assert!(get_request_payload(req).is_none(), "Ping request should not have payload");
         }
 
         // Verify Ping response
         {
-            verify_response_packet(resp, 0, Some(0));
-            assert!(
-                get_response_payload(resp).is_none(),
-                "Ping response should not have payload"
-            );
+            verify_response_packet(resp, 0, 0);
+            assert!(get_response_payload(resp).is_none(), "Ping response should not have payload");
         }
 
         Ok(())
@@ -450,7 +439,7 @@ mod tests {
 
         // Verify LoginUser response
         {
-            verify_response_packet(resp, 0, Some(4));
+            verify_response_packet(resp, 0, 4);
 
             let resp_payload = get_response_payload(resp)
                 .expect("LoginUser response should have payload");
@@ -507,10 +496,10 @@ mod tests {
             let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
             let req_stream_id_kind: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_kind");
-            assert_eq!(req_stream_id_kind, 1); // 1 = numeric identifier
+            assert_eq!(req_stream_id_kind, IdKind::Numeric.as_code() as u32);
 
             let req_stream_id_length: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_length");
-            assert_eq!(req_stream_id_length, 4); // u32 = 4 bytes
+            assert_eq!(req_stream_id_length, 4);
 
             let req_stream_id_value: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_value_numeric");
             assert_eq!(req_stream_id_value, stream_id);
@@ -527,7 +516,7 @@ mod tests {
 
         // Verify CreateTopic response
         {
-            verify_response_packet(resp, 0, None);
+            verify_response_packet(resp, 0, 0);
 
             let resp_payload = get_response_payload(resp)
                 .expect("CreateTopic response should have payload");
