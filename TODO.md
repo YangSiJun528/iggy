@@ -266,6 +266,17 @@ cargo build -p wireshark --tests --features protocol-tests
 -p wireshark (또는 --package wireshark)가 핵심입니다. 이렇게 하면
 워크스페이스의 다른 크레이트들은 무시하고 wireshark만 타겟팅합니다.
 
+feature를 써서 분리하는 이유 
+- feature 없음 → 테스트 바이너리가 아예 빌드 안 됨
+- feature 있음 → 테스트 바이너리 빌드 + 모든 테스트 실행
+
+그리고 Cargo.toml 보면 required-features를 써서 테스트 시에 따로 cfg_attr 설정 없이 전역으로 편하게 적용 가능함.
+
+이렇게 쓰는 이유(기본 프로젝트에서 BDD도 비슷하여 비교)
+- 외부 의존성: BDD는 cucumber, wireshark는 tshark
+- 실수 방지: 로컬에서 실수로 실행되면 실패할 수 있음
+- 명시적 실행: 개발자가 의도적으로 feature를 켜야 실행
+
 ----
 
 
