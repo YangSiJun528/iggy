@@ -31,7 +31,7 @@ mod tests {
     static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     /// Helper function to extract and parse iggy field values (returns Result)
-    fn get_iggy_field<T>(iggy: &Value, field: &str) -> Result<T, String>
+    fn get_field<T>(iggy: &Value, field: &str) -> Result<T, String>
     where
         T: FromStr,
         T::Err: Display,
@@ -44,12 +44,12 @@ mod tests {
     }
 
     /// Helper function to extract and parse iggy field values (panics on error)
-    fn expect_iggy_field<T>(iggy: &Value, field: &str) -> T
+    fn expect_field<T>(iggy: &Value, field: &str) -> T
     where
         T: FromStr,
         T::Err: Display,
     {
-        get_iggy_field(iggy, field).unwrap_or_else(|e| panic!("{}", e))
+        get_field(iggy, field).unwrap_or_else(|e| panic!("{}", e))
     }
 
     /// Convert status code to status name
@@ -276,7 +276,7 @@ mod tests {
         let req_idx = iggy_layers
             .iter()
             .position(|iggy| {
-                get_iggy_field::<u32>(iggy, "iggy.request.command")
+                get_field::<u32>(iggy, "iggy.request.command")
                     .ok()
                     .map(|command| command == command_id)
                     .unwrap_or(false)
@@ -286,7 +286,7 @@ mod tests {
         let req = iggy_layers[req_idx];
 
         // Get command name from request
-        let command_name: String = get_iggy_field(req, "iggy.request.command_name")
+        let command_name: String = get_field(req, "iggy.request.command_name")
             .map_err(|e| format!("Failed to get command name from request: {}", e))?;
 
         // Find response packet after the request
@@ -294,7 +294,7 @@ mod tests {
             .iter()
             .find(|iggy| {
                 // Response should have the same command_name
-                get_iggy_field::<String>(iggy, "iggy.request.command_name")
+                get_field::<String>(iggy, "iggy.request.command_name")
                     .ok()
                     .map(|name| name == command_name)
                     .unwrap_or(false)
@@ -312,16 +312,16 @@ mod tests {
         iggy: &Value,
         expected_length: u32,
     ) {
-        let command: u32 = expect_iggy_field(iggy, "iggy.request.command");
+        let command: u32 = expect_field(iggy, "iggy.request.command");
 
         // Get expected command name from command code
         let expected_cmd_name = iggy_common::get_name_from_code(command)
             .unwrap_or_else(|_| panic!("Invalid command code: {}", command));
 
-        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
+        let cmd_name: String = expect_field(iggy, "iggy.request.command_name");
         assert_eq!(cmd_name, expected_cmd_name);
 
-        let length: u32 = expect_iggy_field(iggy, "iggy.request.length");
+        let length: u32 = expect_field(iggy, "iggy.request.length");
         assert_eq!(length, expected_length);
     }
 
@@ -332,23 +332,23 @@ mod tests {
         expected_length: Option<u32>,
     ) {
         // Verify command name is valid
-        let cmd_name: String = expect_iggy_field(iggy, "iggy.request.command_name");
+        let cmd_name: String = expect_field(iggy, "iggy.request.command_name");
         // Just verify it's a valid command name by checking if we can look it up
         // (the name itself was already verified during request packet processing)
         let _ = cmd_name; // We trust the command_name from dissector
 
         // Verify status code
-        let status: u32 = expect_iggy_field(iggy, "iggy.response.status");
+        let status: u32 = expect_field(iggy, "iggy.response.status");
         assert_eq!(status, expected_status_code);
 
         // Verify status name matches the status code
-        let status_name: String = expect_iggy_field(iggy, "iggy.response.status_name");
+        let status_name: String = expect_field(iggy, "iggy.response.status_name");
         let expected_status_name = status_code_to_name(expected_status_code);
         assert_eq!(status_name, expected_status_name);
 
         // Verify length if specified
         if let Some(len) = expected_length {
-            let length: u32 = expect_iggy_field(iggy, "iggy.response.length");
+            let length: u32 = expect_field(iggy, "iggy.response.length");
             assert_eq!(length, len);
         }
     }
@@ -438,15 +438,13 @@ mod tests {
 
             let req_payload = get_request_payload(req).expect("LoginUser request should have payload");
 
-            let username: String = expect_iggy_field(req_payload, "iggy.login_user.req.username");
+            let username: String = expect_field(req_payload, "iggy.login_user.req.username");
             assert_eq!(username, DEFAULT_ROOT_USERNAME);
 
-            let username_len: u32 =
-                expect_iggy_field(req_payload, "iggy.login_user.req.username_len");
+            let username_len: u32 = expect_field(req_payload, "iggy.login_user.req.username_len");
             assert_eq!(username_len, DEFAULT_ROOT_USERNAME.len() as u32);
 
-            let password_len: u32 =
-                expect_iggy_field(req_payload, "iggy.login_user.req.password_len");
+            let password_len: u32 = expect_field(req_payload, "iggy.login_user.req.password_len");
             assert_eq!(password_len, DEFAULT_ROOT_PASSWORD.len() as u32);
         }
 
@@ -457,7 +455,7 @@ mod tests {
             let resp_payload = get_response_payload(resp)
                 .expect("LoginUser response should have payload");
 
-            let user_id: u32 = expect_iggy_field(resp_payload, "iggy.login_user.resp.user_id");
+            let user_id: u32 = expect_field(resp_payload, "iggy.login_user.resp.user_id");
             assert!(user_id > 0, "User ID should be greater than 0");
         }
 
@@ -508,22 +506,22 @@ mod tests {
 
             let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
-            let req_stream_id_kind: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_kind");
+            let req_stream_id_kind: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_kind");
             assert_eq!(req_stream_id_kind, 1); // 1 = numeric identifier
 
-            let req_stream_id_length: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_length");
+            let req_stream_id_length: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_length");
             assert_eq!(req_stream_id_length, 4); // u32 = 4 bytes
 
-            let req_stream_id_value: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.stream_id_value_numeric");
+            let req_stream_id_value: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_value_numeric");
             assert_eq!(req_stream_id_value, stream_id);
 
-            let name: String = expect_iggy_field(req_payload, "iggy.create_topic.req.name");
+            let name: String = expect_field(req_payload, "iggy.create_topic.req.name");
             assert_eq!(name, topic_name);
 
-            let name_len: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.name_len");
+            let name_len: u32 = expect_field(req_payload, "iggy.create_topic.req.name_len");
             assert_eq!(name_len, topic_name.len() as u32);
 
-            let partitions: u32 = expect_iggy_field(req_payload, "iggy.create_topic.req.partitions_count");
+            let partitions: u32 = expect_field(req_payload, "iggy.create_topic.req.partitions_count");
             assert_eq!(partitions, partitions_count);
         }
 
@@ -534,22 +532,22 @@ mod tests {
             let resp_payload = get_response_payload(resp)
                 .expect("CreateTopic response should have payload");
 
-            let resp_topic_id: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.topic_id");
+            let resp_topic_id: u32 = expect_field(resp_payload, "iggy.create_topic.resp.topic_id");
             assert!(resp_topic_id > 0, "Topic ID should be greater than 0");
 
-            let resp_name: String = expect_iggy_field(resp_payload, "iggy.create_topic.resp.name");
+            let resp_name: String = expect_field(resp_payload, "iggy.create_topic.resp.name");
             assert_eq!(resp_name, topic_name);
 
-            let resp_name_len: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.name_len");
+            let resp_name_len: u32 = expect_field(resp_payload, "iggy.create_topic.resp.name_len");
             assert_eq!(resp_name_len, topic_name.len() as u32);
 
-            let resp_partitions: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.partitions_count");
+            let resp_partitions: u32 = expect_field(resp_payload, "iggy.create_topic.resp.partitions_count");
             assert_eq!(resp_partitions, partitions_count);
 
-            let resp_messages_count: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.messages_count");
+            let resp_messages_count: u32 = expect_field(resp_payload, "iggy.create_topic.resp.messages_count");
             assert_eq!(resp_messages_count, 0);
 
-            let resp_size: u32 = expect_iggy_field(resp_payload, "iggy.create_topic.resp.size");
+            let resp_size: u32 = expect_field(resp_payload, "iggy.create_topic.resp.size");
             assert_eq!(resp_size, 0);
         }
 
