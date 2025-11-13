@@ -41,7 +41,7 @@ local common_fields = {
 ----------------------------------------
 local COMMANDS = {
     [1] = {
-        name = "Ping",
+        name = "ping",
         fields = { request = {}, response = {},},
         request_payload_dissector = function(self, buffer, tree, offset)
             -- No request payload
@@ -51,7 +51,7 @@ local COMMANDS = {
         end,
     },
     [38] = {
-        name = "LoginUser",
+        name = "user.login",
         fields = {
             request = {
                 username_len = ProtoField.uint8("iggy.login_user.req.username_len", "Username Length", base.DEC),
@@ -109,7 +109,7 @@ local COMMANDS = {
         end,
     },
     [302] = {
-        name = "CreateTopic",
+        name = "topic.create",
         fields = {
             request = {
                 stream_id_kind = ProtoField.uint8("iggy.create_topic.req.stream_id_kind", "Stream ID Kind", base.DEC),
@@ -309,8 +309,17 @@ iggy.fields = all_fields
 -- Status Code Registry
 ----------------------------------------
 local STATUS_CODES = {
-    [0] = "OK",
-    [2] = "Unauthenticated",
+    [0] = "ok",
+    [1] = "error",
+    [2] = "invalid_configuration",
+    [3] = "invalid_command",
+    [4] = "invalid_format",
+    [5] = "feature_unavailable",
+    [6] = "invalid_identifier",
+    [8] = "disconnected",
+    [40] = "unauthenticated",
+    [41] = "unauthorized",
+    [42] = "invalid_credentials",
     -- Add more status codes as needed
 }
 
