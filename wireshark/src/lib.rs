@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use iggy::prelude::*;
-    use iggy_common::IggyError;
+    use iggy_common::{IggyError, PING_CODE, LOGIN_USER_CODE, CREATE_TOPIC_CODE};
     use serde_json::Value;
     use std::fmt::Display;
     use std::fs;
@@ -9,7 +9,6 @@ mod tests {
     use std::path::PathBuf;
     use std::process::{Child, Command as ProcessCommand, Stdio};
     use std::str::FromStr;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::time::sleep;
@@ -26,9 +25,6 @@ mod tests {
     const CAPTURE_START_WAIT_MS: u64 = 1000;
     const OPERATION_WAIT_MS: u64 = 2000;
     const CAPTURE_STOP_WAIT_MS: u64 = 500;
-
-    /// Atomic counter for generating unique file IDs
-    static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     /// Helper function to extract and parse iggy field values (returns Result)
     fn get_field<T>(iggy: &Value, field: &str) -> Result<T, String>
@@ -81,9 +77,8 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let pid = std::process::id();
-            let counter = FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
 
-            let file = format!("/tmp/iggy_test_{}_{}_{}.pcap", timestamp, pid, counter);
+            let file = format!("/tmp/iggy_test_{}_{}.pcap", timestamp, pid);
             let pcap_file = PathBuf::from(file);
 
             Self {
