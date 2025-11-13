@@ -527,7 +527,340 @@ end
 
 ---
 
-## 14. Command Registry 패턴
+## 14. Enum 값 표시
+
+### 문제
+숫자 코드를 사람이 읽을 수 있는 이름으로 표시하고 싶습니다.
+
+### 해결 방법 1: ProtoField에 값 매핑
+
+```lua
+-- 1. 값 -> 이름 매핑 테이블
+local command_names = {
+    [1] = "Ping",
+    [2] = "GetStream",
+    [3] = "CreateTopic",
+}
+
+-- 2. ProtoField 정의 시 매핑 전달
+local pf_command = ProtoField.uint32("proto.command", "Command",
+                                      base.DEC, command_names)
+
+-- 3. 사용
+tree:add_le(pf_command, tvbuf:range(0, 4))
+-- GUI에 "Command: 1 (Ping)" 표시
+```
+
+**장점**:
+- 자동으로 이름이 표시됨
+- 필터에서 이름 사용 가능: `proto.command == "Ping"`
+
+### 해결 방법 2: append_text
+
+```lua
+local COMMANDS = { [1] = "Ping", [2] = "GetStream" }
+
+local cmd = tvbuf:range(0, 4):le_uint()
+local cmd_item = tree:add_le(pf_command, tvbuf:range(0, 4))
+
+if COMMANDS[cmd] then
+    cmd_item:append_text(string.format(" (%s)", COMMANDS[cmd]))
+end
+```
+
+**장점**: 더 세밀한 제어 가능
+
+### 헬퍼 함수 패턴
+
+반복되는 enum 처리를 간소화:
+
+```lua
+-- Enum 정의
+local RequestType = {
+    DISPLAY = 1,
+    LED = 2,
+}
+
+-- 자동으로 역방향 매핑 생성
+local RequestType_names = {}
+for name, value in pairs(RequestType) do
+    RequestType_names[value] = name
+end
+
+-- ProtoField 정의
+local pf_type = ProtoField.uint8("proto.type", "Type",
+                                  base.HEX, RequestType_names)
+
+-- 코드에서 사용
+if type == RequestType.DISPLAY then
+    -- ...
+end
+```
+
+---
+
+## 15. ProtoField.framenum - Request/Response 연결
+
+### 용도
+Request와 Response를 GUI에서 클릭 가능한 링크로 연결합니다.
+
+### 사용법
+
+```lua
+-- 1. ProtoField 정의
+local pf_request_in = ProtoField.framenum("proto.request", "Request",
+                                          base.NONE, frametype.REQUEST)
+local pf_response_in = ProtoField.framenum("proto.response", "Response",
+                                           base.NONE, frametype.RESPONSE)
+
+-- 2. 등록
+proto.fields = { pf_request_in, pf_response_in }
+
+-- 3. Request/Response 매칭 후 사용
+if is_request then
+    -- Request 패킷에서
+    if matched_response_frame then
+        tree:add(pf_response_in, matched_response_frame)
+    end
+else
+    -- Response 패킷에서
+    if matched_request_frame then
+        tree:add(pf_request_in, matched_request_frame)
+    end
+end
+```
+
+### 효과
+- Wireshark GUI에서 클릭 가능한 링크로 표시됨
+- 해당 프레임으로 바로 이동 가능
+- 사용자 경험 향상
+
+### Conversation 데이터와 함께 사용
+
+```lua
+local id2frame = {
+    request = {},   -- request_id -> frame_number
+    response = {},  -- request_id -> frame_number
+}
+
+if is_request then
+    if not pktinfo.visited then
+        id2frame.request[request_id] = pktinfo.number
+    end
+
+    if id2frame.response[request_id] then
+        tree:add(pf_response_in, id2frame.response[request_id])
+    end
+else
+    if not pktinfo.visited then
+        id2frame.response[request_id] = pktinfo.number
+    end
+
+    if id2frame.request[request_id] then
+        tree:add(pf_request_in, id2frame.request[request_id])
+    end
+end
+```
+
+---
+
+## 16. Desegmentation 헬퍼 패턴
+
+### 문제
+TCP desegmentation 로직이 복잡하고 반복적입니다.
+
+### 해결: msg_consumer 패턴
+
+```lua
+local function msg_consumer(buf, pinfo)
+    local obj = {
+        msg_offset = 0,   -- 현재 메시지 시작 위치
+        msg_taken = 0,    -- 현재 메시지에서 읽은 바이트
+        not_enough = false,
+    }
+
+    obj.next_msg = function()
+        obj.msg_offset = obj.msg_offset + obj.msg_taken
+        obj.msg_taken = 0
+    end
+
+    obj.take_next = function(n)
+        if obj.not_enough then
+            return  -- 이미 부족한 상태
+        end
+
+        local remaining = buf:len() - (obj.msg_offset + obj.msg_taken)
+        if remaining < n then
+            pinfo.desegment_offset = obj.msg_offset
+            pinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
+            obj.not_enough = true
+            return
+        end
+
+        local data = buf:range(obj.msg_offset + obj.msg_taken, n)
+        obj.msg_taken = obj.msg_taken + n
+        return data
+    end
+
+    obj.current_msg_buf = function()
+        return buf:range(obj.msg_offset, obj.msg_taken)
+    end
+
+    return obj
+end
+```
+
+### 사용 예시
+
+```lua
+function proto.dissector(buf, pinfo, root)
+    local consumer = msg_consumer(buf, pinfo)
+
+    while true do
+        consumer.next_msg()
+
+        -- 헤더 읽기
+        local id_buf = consumer.take_next(4)
+        if not id_buf then
+            return  -- 데이터 부족
+        end
+
+        local type_buf = consumer.take_next(1)
+        if not type_buf then
+            return
+        end
+
+        -- 동적 길이 필드
+        local len = type_buf:le_uint()
+        local data_buf = consumer.take_next(len)
+        if not data_buf then
+            return
+        end
+
+        -- Tree에 추가
+        local tree = root:add(proto, consumer.current_msg_buf())
+        tree:add_le(pf_id, id_buf)
+        tree:add_le(pf_type, type_buf)
+        tree:add(pf_data, data_buf)
+    end
+end
+```
+
+### 장점
+- Desegmentation 로직이 캡슐화됨
+- 에러 처리가 간단해짐
+- 코드 가독성 향상
+
+---
+
+## 17. Deferred Tree Adding
+
+### 문제
+파싱 중 오류가 발생하면 이미 tree에 추가된 필드들이 불완전한 상태로 남습니다.
+
+### 해결: 검증 후 tree 추가
+
+```lua
+function proto.dissector(buf, pinfo, root)
+    -- 1. 파싱할 필드들을 임시 테이블에 저장
+    local tree_add = {}
+
+    -- 2. 모든 필드 파싱
+    local id_buf = consumer.take_next(4)
+    if not id_buf then
+        return
+    end
+    table.insert(tree_add, {pf_id, id_buf})
+
+    local type_buf = consumer.take_next(1)
+    if not type_buf then
+        return
+    end
+    table.insert(tree_add, {pf_type, type_buf})
+
+    local data_buf = consumer.take_next(10)
+    if not data_buf then
+        return
+    end
+    table.insert(tree_add, {pf_data, data_buf})
+
+    -- 3. 모든 파싱이 성공한 후 tree에 추가
+    local tree = root:add(proto, consumer.current_msg_buf())
+    for _, item in ipairs(tree_add) do
+        tree:add_le(item[1], item[2])
+    end
+end
+```
+
+### 장점
+- Desegmentation 시 부분 파싱된 트리가 표시되지 않음
+- 오류 발생 시 깔끔한 처리
+- 원자적 파싱 보장
+
+### 주의사항
+- 메모리 사용량이 약간 증가
+- 간단한 프로토콜에서는 불필요할 수 있음
+
+---
+
+## 18. 필드 이름 헬퍼 함수
+
+### 문제
+모든 ProtoField에 프로토콜 prefix를 반복해서 작성해야 합니다.
+
+```lua
+-- 반복적인 코드
+local pf_id = ProtoField.uint32("myproto.id", "ID")
+local pf_command = ProtoField.uint32("myproto.command", "Command")
+local pf_length = ProtoField.uint32("myproto.length", "Length")
+```
+
+### 해결: 헬퍼 함수
+
+```lua
+local proto = Proto("myproto", "My Protocol")
+
+-- 헬퍼 함수
+local function field(name)
+    return string.format("%s.%s", proto.name, name)
+end
+
+-- 간결한 정의
+local pf_id = ProtoField.uint32(field("id"), "ID")
+local pf_command = ProtoField.uint32(field("command"), "Command")
+local pf_length = ProtoField.uint32(field("length"), "Length")
+
+-- 중첩 필드
+local pf_header_version = ProtoField.uint8(field("header.version"), "Version")
+```
+
+### 장점
+- 타이핑 감소
+- 오타 방지
+- 프로토콜 이름 변경 시 한 곳만 수정
+
+### 테이블 방식으로 더 개선
+
+```lua
+local fields = {
+    id = ProtoField.uint32(field("id"), "ID"),
+    command = ProtoField.uint32(field("command"), "Command"),
+    length = ProtoField.uint32(field("length"), "Length"),
+}
+
+-- 자동 등록
+for _, pf in pairs(fields) do
+    table.insert(proto.fields, pf)
+end
+
+-- 사용
+tree:add_le(fields.id, buf:range(0, 4))
+tree:add_le(fields.command, buf:range(4, 4))
+```
+
+---
+
+## 19. Command Registry 패턴
 
 ### 구조
 ```lua

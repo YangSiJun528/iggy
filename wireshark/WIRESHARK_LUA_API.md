@@ -34,8 +34,15 @@ local pf_transaction_id = ProtoField.uint16("mydns.trans_id", "Transaction ID")
 local pf_flags = ProtoField.uint16("mydns.flags", "Flags", base.HEX)
 local pf_name = ProtoField.string("mydns.name", "Name")
 
+-- Enum 값 표시 (값 -> 이름 매핑)
+local cmd_names = { [1] = "Ping", [2] = "GetStream", [3] = "CreateTopic" }
+local pf_command = ProtoField.uint32("mydns.command", "Command", base.DEC, cmd_names)
+
+-- Request/Response 프레임 참조
+local pf_request = ProtoField.framenum("mydns.request", "Request", base.NONE, frametype.REQUEST)
+
 -- proto.fields에 배열로 등록
-mydns.fields = { pf_transaction_id, pf_flags, pf_name }
+mydns.fields = { pf_transaction_id, pf_flags, pf_name, pf_command, pf_request }
 ```
 
 **주의**: 등록하지 않은 ProtoField는 사용 불가
@@ -54,7 +61,9 @@ end
 ```
 
 **매개변수**: `(tvbuf: Tvb, pktinfo: Pinfo, root: TreeItem)`
-**반환값**: 파싱한 바이트 수 (number) 또는 nil (의미 없음)
+**반환값**: 파싱한 바이트 수 (number) 또는 nil
+
+**주의**: Desegmentation 중에는 반환하지 않음
 
 ### 1.4 Preference 설정
 
@@ -208,10 +217,12 @@ conv[proto] = conv_data
 
 ```lua
 -- TCP 재조립
+pktinfo.desegment_offset = 0  -- 메시지 시작 위치
 pktinfo.desegment_len = DESEGMENT_ONE_MORE_SEGMENT
-pktinfo.desegment_len = 100  -- 정확한 바이트 수
-pktinfo.desegment_offset = 0
+return  -- 더 많은 데이터 대기
 ```
+
+**주의**: desegment 설정 후 반드시 return (값 없이)
 
 ---
 
