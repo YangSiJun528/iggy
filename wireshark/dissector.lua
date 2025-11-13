@@ -34,6 +34,9 @@ local common_fields = {
     resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name"),
     resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload"),
     resp_payload = ProtoField.bytes("iggy.response.payload", "Payload"),
+    -- Request/Response linking
+    request_frame = ProtoField.framenum("iggy.request_frame", "Request Frame", base.NONE, frametype.REQUEST),
+    response_frame = ProtoField.framenum("iggy.response_frame", "Response Frame", base.NONE, frametype.RESPONSE),
 }
 
 ----------------------------------------
@@ -342,9 +345,9 @@ end
 
 -- Record a request
 -- @param pinfo: Wireshark packet info object
--- @param request_data: Data to associate with this request (e.g., command code)
+-- @param command_code: Command code for this request
 -- @return: true if recorded successfully, false otherwise
-function ReqRespTracker:record_request(pinfo, request_data)
+function ReqRespTracker:record_request(pinfo, command_code)
     if not pinfo.conversation then
         return false
     end
@@ -355,7 +358,7 @@ function ReqRespTracker:record_request(pinfo, request_data)
     if not conv_data then
         conv_data = {
             queue = {first = 0, last = -1},  -- FIFO queue
-            matched = {}  -- [resp_frame_num] = request_data (cache)
+            matched = {}  -- [resp_frame_num] = {command_code, req_frame_num} (cache)
         }
     end
 
@@ -363,7 +366,10 @@ function ReqRespTracker:record_request(pinfo, request_data)
     if not pinfo.visited then
         local last = conv_data.queue.last + 1
         conv_data.queue.last = last
-        conv_data.queue[last] = request_data
+        conv_data.queue[last] = {
+            command_code = command_code,
+            frame_num = pinfo.number
+        }
     end
 
     conv[self.proto] = conv_data
@@ -372,7 +378,7 @@ end
 
 -- Find matching request for a response
 -- @param pinfo: Wireshark packet info object
--- @return: request_data if found, nil otherwise
+-- @return: {command_code, frame_num} if found, nil otherwise
 function ReqRespTracker:find_request(pinfo)
     if not pinfo.conversation then
         return nil
@@ -525,9 +531,16 @@ function iggy.dissector(buffer, pinfo, tree)
             local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
             subtree:add(cf.resp_status_name, status_name):set_generated()
 
-            -- Get matching request code for this TCP stream
-            local command_code = request_tracker:find_request(pinfo)
+            -- Get matching request for this TCP stream
+            local request_data = request_tracker:find_request(pinfo)
+            local command_code = request_data and request_data.command_code
+            local request_frame_num = request_data and request_data.frame_num
             local command_info = command_code and COMMANDS[command_code]
+
+            -- Add link to request frame
+            if request_frame_num then
+                subtree:add(cf.request_frame, request_frame_num)
+            end
 
             -- Early return for unknown commands (no matching request or unimplemented command)
             if not command_info then
