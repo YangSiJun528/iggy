@@ -276,12 +276,10 @@ fn find_request_response<'a>(
     let resp = iggy_layers[req_idx + 1..]
         .iter()
         .find(|iggy| {
-            // Response should have the same command_name
             get_field::<String>(iggy, "iggy.request.command_name")
                 .ok()
                 .map(|name| name == command_name)
                 .unwrap_or(false)
-                // And should have response.status field
                 && iggy.get("iggy.response.status").is_some()
         })
         .copied()
@@ -290,14 +288,12 @@ fn find_request_response<'a>(
     Ok((req, resp))
 }
 
-/// Verify request packet fields
 fn verify_request_packet(
     iggy: &Value,
     expected_length: u32,
 ) {
     let command: u32 = expect_field(iggy, "iggy.request.command");
 
-    // Get expected command name from command code
     let expected_cmd_name = iggy_common::get_name_from_code(command)
         .unwrap_or_else(|_| panic!("Invalid command code: {}", command));
 
@@ -308,25 +304,20 @@ fn verify_request_packet(
     assert_eq!(length, expected_length);
 }
 
-/// Verify response packet fields
 fn verify_response_packet(
     iggy: &Value,
     expected_status_code: u32,
     expected_length: u32,
 ) {
-    // Verify command name field exists (validated by dissector)
     let _cmd_name: String = expect_field(iggy, "iggy.request.command_name");
 
-    // Verify status code
     let status: u32 = expect_field(iggy, "iggy.response.status");
     assert_eq!(status, expected_status_code);
 
-    // Verify status name matches the status code
     let status_name: String = expect_field(iggy, "iggy.response.status_name");
     let expected_status_name = status_code_to_name(expected_status_code);
     assert_eq!(status_name, expected_status_name);
 
-    // Verify length if specified
     let length: u32 = expect_field(iggy, "iggy.response.length");
     assert_eq!(length, expected_length);
 }
@@ -339,7 +330,6 @@ fn get_response_payload(packet: &Value) -> Option<&Value> {
     packet.get("iggy.response.payload_tree")
 }
 
-/// Helper function to print packet details for debugging
 fn print_packet_json(packets: &[Value], show_all: bool) {
     println!("\n=== Captured Packets JSON ===");
 
@@ -372,17 +362,11 @@ async fn test_ping_dissection() -> Result<(), Box<dyn std::error::Error>> {
 
     let (req, resp) = find_request_response(&iggy_layers, PING_CODE)?;
 
-    // Verify Ping request
-    {
-        verify_request_packet(req, 4);
-        assert!(get_request_payload(req).is_none(), "Ping request should not have payload");
-    }
+    verify_request_packet(req, 4);
+    assert!(get_request_payload(req).is_none(), "Ping request should not have payload");
 
-    // Verify Ping response
-    {
-        verify_response_packet(resp, 0, 0);
-        assert!(get_response_payload(resp).is_none(), "Ping response should not have payload");
-    }
+    verify_response_packet(resp, 0, 0);
+    assert!(get_response_payload(resp).is_none(), "Ping response should not have payload");
 
     Ok(())
 }
@@ -402,32 +386,26 @@ async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> 
 
     let (req, resp) = find_request_response(&iggy_layers, LOGIN_USER_CODE)?;
 
-    // Verify LoginUser request
-    {
-        verify_request_packet(req, 27);
+    verify_request_packet(req, 27);
 
-        let req_payload = get_request_payload(req).expect("LoginUser request should have payload");
+    let req_payload = get_request_payload(req).expect("LoginUser request should have payload");
 
-        let username: String = expect_field(req_payload, "iggy.login_user.req.username");
-        assert_eq!(username, DEFAULT_ROOT_USERNAME);
+    let username: String = expect_field(req_payload, "iggy.login_user.req.username");
+    assert_eq!(username, DEFAULT_ROOT_USERNAME);
 
-        let username_len: u32 = expect_field(req_payload, "iggy.login_user.req.username_len");
-        assert_eq!(username_len, DEFAULT_ROOT_USERNAME.len() as u32);
+    let username_len: u32 = expect_field(req_payload, "iggy.login_user.req.username_len");
+    assert_eq!(username_len, DEFAULT_ROOT_USERNAME.len() as u32);
 
-        let password_len: u32 = expect_field(req_payload, "iggy.login_user.req.password_len");
-        assert_eq!(password_len, DEFAULT_ROOT_PASSWORD.len() as u32);
-    }
+    let password_len: u32 = expect_field(req_payload, "iggy.login_user.req.password_len");
+    assert_eq!(password_len, DEFAULT_ROOT_PASSWORD.len() as u32);
 
-    // Verify LoginUser response
-    {
-        verify_response_packet(resp, 0, 4);
+    verify_response_packet(resp, 0, 4);
 
-        let resp_payload = get_response_payload(resp)
-            .expect("LoginUser response should have payload");
+    let resp_payload = get_response_payload(resp)
+        .expect("LoginUser response should have payload");
 
-        let user_id: u32 = expect_field(resp_payload, "iggy.login_user.resp.user_id");
-        assert!(user_id > 0, "User ID should be greater than 0");
-    }
+    let user_id: u32 = expect_field(resp_payload, "iggy.login_user.resp.user_id");
+    assert!(user_id > 0, "User ID should be greater than 0");
 
     Ok(())
 }
@@ -437,11 +415,9 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
     let mut fixture = TestFixture::new();
     fixture.start(true).await?;
 
-    // Create a test stream first (auto-assign ID)
     let stream_name = "test_create_topic_stream";
     let topic_name = "test_create_topic";
 
-    // Delete existing stream if it exists (ignore error if not found)
     let _ = fixture.client.delete_stream(&Identifier::named(stream_name)?).await;
 
     fixture
@@ -449,7 +425,6 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
         .create_stream(stream_name, None)
         .await?;
 
-    // Create a topic using stream name
     let partitions_count = 3u32;
 
     fixture
@@ -459,14 +434,13 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
             topic_name,
             partitions_count,
             CompressionAlgorithm::None,
-            None, // replication_factor
-            None, // topic_id (auto-assign)
+            None,
+            None,
             IggyExpiry::NeverExpire,
             MaxTopicSize::ServerDefault,
         )
         .await?;
 
-    // Cleanup: delete the created stream (and its topics) before stopping capture
     fixture.client.delete_stream(&Identifier::named(stream_name)?).await?;
 
     let packets = fixture.stop_and_analyze().await?;
@@ -474,56 +448,50 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
 
     let (req, resp) = find_request_response(&iggy_layers, CREATE_TOPIC_CODE)?;
 
-    // Verify CreateTopic request
-    {
-        verify_request_packet(req, 74);
+    verify_request_packet(req, 74);
 
-        let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
+    let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
-        let req_stream_id_kind: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_kind");
-        assert_eq!(req_stream_id_kind, IdKind::String.as_code() as u32);
+    let req_stream_id_kind: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_kind");
+    assert_eq!(req_stream_id_kind, IdKind::String.as_code() as u32);
 
-        let req_stream_id_length: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_length");
-        assert_eq!(req_stream_id_length, stream_name.len() as u32);
+    let req_stream_id_length: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_length");
+    assert_eq!(req_stream_id_length, stream_name.len() as u32);
 
-        let req_stream_id_value: String = expect_field(req_payload, "iggy.create_topic.req.stream_id_value_string");
-        assert_eq!(req_stream_id_value, stream_name);
+    let req_stream_id_value: String = expect_field(req_payload, "iggy.create_topic.req.stream_id_value_string");
+    assert_eq!(req_stream_id_value, stream_name);
 
-        let name: String = expect_field(req_payload, "iggy.create_topic.req.name");
-        assert_eq!(name, topic_name);
+    let name: String = expect_field(req_payload, "iggy.create_topic.req.name");
+    assert_eq!(name, topic_name);
 
-        let name_len: u32 = expect_field(req_payload, "iggy.create_topic.req.name_len");
-        assert_eq!(name_len, topic_name.len() as u32);
+    let name_len: u32 = expect_field(req_payload, "iggy.create_topic.req.name_len");
+    assert_eq!(name_len, topic_name.len() as u32);
 
-        let partitions: u32 = expect_field(req_payload, "iggy.create_topic.req.partitions_count");
-        assert_eq!(partitions, partitions_count);
-    }
+    let partitions: u32 = expect_field(req_payload, "iggy.create_topic.req.partitions_count");
+    assert_eq!(partitions, partitions_count);
 
-    // Verify CreateTopic response
-    {
-        verify_response_packet(resp, 0, 188);
+    verify_response_packet(resp, 0, 188);
 
-        let resp_payload = get_response_payload(resp)
-            .expect("CreateTopic response should have payload");
+    let resp_payload = get_response_payload(resp)
+        .expect("CreateTopic response should have payload");
 
-        let resp_topic_id: u32 = expect_field(resp_payload, "iggy.create_topic.resp.topic_id");
-        assert!(resp_topic_id > 0, "Topic ID should be greater than 0");
+    let resp_topic_id: u32 = expect_field(resp_payload, "iggy.create_topic.resp.topic_id");
+    assert!(resp_topic_id > 0, "Topic ID should be greater than 0");
 
-        let resp_name: String = expect_field(resp_payload, "iggy.create_topic.resp.name");
-        assert_eq!(resp_name, topic_name);
+    let resp_name: String = expect_field(resp_payload, "iggy.create_topic.resp.name");
+    assert_eq!(resp_name, topic_name);
 
-        let resp_name_len: u32 = expect_field(resp_payload, "iggy.create_topic.resp.name_len");
-        assert_eq!(resp_name_len, topic_name.len() as u32);
+    let resp_name_len: u32 = expect_field(resp_payload, "iggy.create_topic.resp.name_len");
+    assert_eq!(resp_name_len, topic_name.len() as u32);
 
-        let resp_partitions: u32 = expect_field(resp_payload, "iggy.create_topic.resp.partitions_count");
-        assert_eq!(resp_partitions, partitions_count);
+    let resp_partitions: u32 = expect_field(resp_payload, "iggy.create_topic.resp.partitions_count");
+    assert_eq!(resp_partitions, partitions_count);
 
-        let resp_messages_count: u32 = expect_field(resp_payload, "iggy.create_topic.resp.messages_count");
-        assert_eq!(resp_messages_count, 0);
+    let resp_messages_count: u32 = expect_field(resp_payload, "iggy.create_topic.resp.messages_count");
+    assert_eq!(resp_messages_count, 0);
 
-        let resp_size: u32 = expect_field(resp_payload, "iggy.create_topic.resp.size");
-        assert_eq!(resp_size, 0);
-    }
+    let resp_size: u32 = expect_field(resp_payload, "iggy.create_topic.resp.size");
+    assert_eq!(resp_size, 0);
 
     Ok(())
 }
