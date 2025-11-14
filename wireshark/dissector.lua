@@ -7,11 +7,11 @@ local common_fields = {
     req_length = ProtoField.uint32("iggy.request.length", "Length", base.DEC, nil, nil, "Length of command code + payload"),
     req_command = ProtoField.uint32("iggy.request.command", "Command Code", base.DEC),
     req_command_name = ProtoField.string("iggy.request.command_name", "Command Name"),
-    req_payload = ProtoField.bytes("iggy.request.payload", "Payload"),
+    req_payload_tree = ProtoField.none("iggy.request.payload_tree", "Payload"),
     resp_status = ProtoField.uint32("iggy.response.status", "Status Code", base.DEC),
     resp_status_name = ProtoField.string("iggy.response.status_name", "Status Name"),
     resp_length = ProtoField.uint32("iggy.response.length", "Length", base.DEC, nil, nil, "Length of payload"),
-    resp_payload = ProtoField.bytes("iggy.response.payload", "Payload"),
+    resp_payload_tree = ProtoField.none("iggy.response.payload_tree", "Payload"),
     request_frame = ProtoField.framenum("iggy.request_frame", "Request Frame", base.NONE, frametype.REQUEST),
     response_frame = ProtoField.framenum("iggy.response_frame", "Response Frame", base.NONE, frametype.RESPONSE),
 }
@@ -359,7 +359,8 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add(cf.req_command_name, command_name):set_generated()
 
             if payload_len > 0 then
-                subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
+                local payload_tree = subtree:add(cf.req_payload_tree, buffer(payload_offset, payload_len))
+                payload_tree:set_text("Payload")
             end
 
             request_tracker:record_request(pinfo, command_code)
@@ -371,7 +372,8 @@ function iggy.dissector(buffer, pinfo, tree)
         subtree:add(cf.req_command_name, command_name):set_generated()
 
         if payload_len > 0 then
-            local payload_tree = subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
+            local payload_tree = subtree:add(cf.req_payload_tree, buffer(payload_offset, payload_len))
+            payload_tree:set_text("Payload")
             command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
         end
 
@@ -410,7 +412,8 @@ function iggy.dissector(buffer, pinfo, tree)
             subtree:add(cf.req_command_name, command_name):set_generated()
 
             if payload_len > 0 then
-                subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
+                local payload_tree = subtree:add(cf.resp_payload_tree, buffer(payload_offset, payload_len))
+                payload_tree:set_text("Payload")
             end
 
             if status_code == 0 then
@@ -426,7 +429,8 @@ function iggy.dissector(buffer, pinfo, tree)
         subtree:add(cf.req_command_name, command_name):set_generated()
 
         if payload_len > 0 and status_code == 0 then
-            local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
+            local payload_tree = subtree:add(cf.resp_payload_tree, buffer(payload_offset, payload_len))
+            payload_tree:set_text("Payload")
             command_info.response_payload_dissector(command_info, buffer, payload_tree, payload_offset)
         end
 
