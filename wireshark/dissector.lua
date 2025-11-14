@@ -8,16 +8,6 @@ local iggy = Proto("iggy", "Iggy Protocol")
 iggy.prefs.server_port = Pref.uint("Server Port", 8090, "Target TCP server port")
 
 ----------------------------------------
--- Expert Info
-----------------------------------------
--- Used only for dissection errors caught by pcall
-local ef_dissection_error = ProtoExpert.new("iggy.dissection_error", "Dissection error", expert.group.MALFORMED, expert.severity.ERROR)
-
-iggy.experts = {
-    ef_dissection_error,
-}
-
-----------------------------------------
 -- Common Fields
 -- These fields are used across all commands
 -- Reference: https://www.wireshark.org/docs/wsdg_html_chunked/lua_module_Proto.html#lua_class_ProtoField
@@ -331,11 +321,9 @@ local STATUS_CODES = {
 -- Handles request-response matching for pipelined protocols using Wireshark's Conversation API
 -- Requires Wireshark 4.6+ with Conversation API support
 --
--- Important: This module only processes complete messages to avoid issues with TCP segmentation.
--- When TCP segments are reassembled, the dissector may be called multiple times for the same
--- logical message. By checking is_complete_message (buflen == total_len), we ensure that
--- request/response tracking only happens once per complete message, preventing duplicate
--- entries in the queue.
+-- Note: This module is only called after TCP desegmentation is complete, so we don't need to
+-- worry about partial messages. The dissector ensures that record_request and find_request
+-- are only called with complete messages.
 ----------------------------------------
 local ReqRespTracker = {}
 ReqRespTracker.__index = ReqRespTracker
@@ -352,9 +340,8 @@ end
 -- Record a request
 -- @param pinfo: Wireshark packet info object
 -- @param command_code: Command code for this request
--- @param is_complete: Whether this is a complete message (not partial due to segmentation)
 -- @return: true if recorded successfully, false otherwise
-function ReqRespTracker:record_request(pinfo, command_code, is_complete)
+function ReqRespTracker:record_request(pinfo, command_code)
     if not pinfo.conversation then
         return false
     end
@@ -369,9 +356,9 @@ function ReqRespTracker:record_request(pinfo, command_code, is_complete)
         }
     end
 
-    -- Only enqueue on first pass AND when we have a complete message
-    -- This prevents duplicate entries from TCP segmentation
-    if not pinfo.visited and is_complete then
+    -- Only enqueue on first pass
+    -- TCP desegmentation is already complete when this is called
+    if not pinfo.visited then
         local last = conv_data.queue.last + 1
         conv_data.queue.last = last
         conv_data.queue[last] = {
@@ -386,9 +373,8 @@ end
 
 -- Find matching request for a response
 -- @param pinfo: Wireshark packet info object
--- @param is_complete: Whether this is a complete message (not partial due to segmentation)
 -- @return: {command_code, frame_num} if found, nil otherwise
-function ReqRespTracker:find_request(pinfo, is_complete)
+function ReqRespTracker:find_request(pinfo)
     if not pinfo.conversation then
         return nil
     end
@@ -407,9 +393,9 @@ function ReqRespTracker:find_request(pinfo, is_complete)
         return conv_data.matched[resp_frame_num]
     end
 
-    -- Dequeue on first pass AND when we have a complete message
-    -- This ensures we only match complete responses to complete requests
-    if not pinfo.visited and is_complete then
+    -- Dequeue on first pass
+    -- TCP desegmentation is already complete when this is called
+    if not pinfo.visited then
         local queue = conv_data.queue
         local first = queue.first
 
@@ -477,137 +463,126 @@ function iggy.dissector(buffer, pinfo, tree)
     end
 
     ----------------------------------------
-    -- Dissect packet with error handling
+    -- Dissect packet
     ----------------------------------------
     local HEADER_SIZE = 8
     local payload_offset = HEADER_SIZE
     local payload_len = total_len - HEADER_SIZE
 
-    -- Check if we have a complete message (not waiting for more segments)
-    local is_complete_message = (buflen == total_len)
+    -- At this point, we have a complete message (TCP desegmentation is done)
+    -- so we can proceed with dissection
 
-    local status, err = pcall(function()
-        if is_request then
-            -- Request dissection
-            local length = buffer(0, 4):le_uint()
-            local command_code = buffer(4, 4):le_uint()
+    if is_request then
+        -- Request dissection
+        local length = buffer(0, 4):le_uint()
+        local command_code = buffer(4, 4):le_uint()
 
-            local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Request")
-            subtree:add(cf.message_type, "Request"):set_generated()
+        local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Request")
+        subtree:add(cf.message_type, "Request"):set_generated()
 
-            -- Length and command code
-            subtree:add_le(cf.req_length, buffer(0, 4))
-            subtree:add_le(cf.req_command, buffer(4, 4))
+        -- Length and command code
+        subtree:add_le(cf.req_length, buffer(0, 4))
+        subtree:add_le(cf.req_command, buffer(4, 4))
 
-            -- Early return for unimplemented commands
-            local command_info = COMMANDS[command_code]
-            if not command_info then
-                local command_name = string.format("Unimplemented (%d)", command_code)
-                subtree:add(cf.req_command_name, command_name):set_generated()
-
-                if payload_len > 0 then
-                    subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
-                end
-
-                request_tracker:record_request(pinfo, command_code, is_complete_message)
-
-                pinfo.cols.info:set(string.format("Request: %s (length=%d)", command_name, length))
-                return
-            end
-
-            -- After this point, command_info is guaranteed to exist
-            local command_name = command_info.name
+        -- Early return for unimplemented commands
+        local command_info = COMMANDS[command_code]
+        if not command_info then
+            local command_name = string.format("Unimplemented (%d)", command_code)
             subtree:add(cf.req_command_name, command_name):set_generated()
 
-            -- Payload
             if payload_len > 0 then
-                local payload_tree = subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
-                command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
+                subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
             end
 
-            -- Track request code for request-response matching (only for complete messages)
-            request_tracker:record_request(pinfo, command_code, is_complete_message)
+            request_tracker:record_request(pinfo, command_code)
 
-            -- Update info column
-            pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
-        elseif is_response then
-            -- Response dissection
-            local status_code = buffer(0, 4):le_uint()
-            local length = buffer(4, 4):le_uint()
+            pinfo.cols.info:set(string.format("Request: %s (length=%d)", command_name, length))
+            return total_len
+        end
 
-            local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Response")
-            subtree:add(cf.message_type, "Response"):set_generated()
+        -- After this point, command_info is guaranteed to exist
+        local command_name = command_info.name
+        subtree:add(cf.req_command_name, command_name):set_generated()
 
-            -- Status code and length
-            subtree:add_le(cf.resp_status, buffer(0, 4))
-            subtree:add_le(cf.resp_length, buffer(4, 4))
+        -- Payload
+        if payload_len > 0 then
+            local payload_tree = subtree:add(cf.req_payload, buffer(payload_offset, payload_len))
+            command_info.request_payload_dissector(command_info, buffer, payload_tree, payload_offset)
+        end
 
-            -- Status name
-            local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
-            subtree:add(cf.resp_status_name, status_name):set_generated()
+        -- Track request code for request-response matching
+        request_tracker:record_request(pinfo, command_code)
 
-            -- Get matching request for this TCP stream (only for complete messages)
-            local request_data = request_tracker:find_request(pinfo, is_complete_message)
-            local command_code = request_data and request_data.command_code
-            local request_frame_num = request_data and request_data.frame_num
-            local command_info = command_code and COMMANDS[command_code]
+        -- Update info column
+        pinfo.cols.info:set(string.format("Request: %s (code=%d, length=%d)", command_name, command_code, length))
+    elseif is_response then
+        -- Response dissection
+        local status_code = buffer(0, 4):le_uint()
+        local length = buffer(4, 4):le_uint()
 
-            -- Add link to request frame
-            if request_frame_num then
-                subtree:add(cf.request_frame, request_frame_num)
+        local subtree = tree:add(iggy, buffer(0, total_len), "Iggy Protocol - Response")
+        subtree:add(cf.message_type, "Response"):set_generated()
+
+        -- Status code and length
+        subtree:add_le(cf.resp_status, buffer(0, 4))
+        subtree:add_le(cf.resp_length, buffer(4, 4))
+
+        -- Status name
+        local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
+        subtree:add(cf.resp_status_name, status_name):set_generated()
+
+        -- Get matching request for this TCP stream
+        local request_data = request_tracker:find_request(pinfo)
+        local command_code = request_data and request_data.command_code
+        local request_frame_num = request_data and request_data.frame_num
+        local command_info = command_code and COMMANDS[command_code]
+
+        -- Add link to request frame
+        if request_frame_num then
+            subtree:add(cf.request_frame, request_frame_num)
+        end
+
+        -- Early return for unimplemented commands (no matching request or unimplemented command)
+        if not command_info then
+            local command_name
+            if command_code then
+                command_name = string.format("Unimplemented (%d)", command_code)
+            else
+                command_name = "No matching request"
             end
 
-            -- Early return for unimplemented commands (no matching request or unimplemented command)
-            if not command_info then
-                local command_name
-                if command_code then
-                    command_name = string.format("Unimplemented (%d)", command_code)
-                else
-                    command_name = "No matching request"
-                end
-
-                subtree:add(cf.req_command_name, command_name):set_generated()
-
-                if payload_len > 0 then
-                    subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
-                end
-
-                if status_code == 0 then
-                    pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
-                else
-                    pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
-                        command_name, status_name, status_code, length))
-                end
-                return
-            end
-
-            -- After this point, command_info is guaranteed to exist
-            local command_name = command_info.name
             subtree:add(cf.req_command_name, command_name):set_generated()
 
-            -- Payload (only for status_code is 0(OK))
-            if payload_len > 0 and status_code == 0 then
-                local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
-                command_info.response_payload_dissector(command_info, buffer, payload_tree, payload_offset)
+            if payload_len > 0 then
+                subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
             end
 
-            -- Update info column
             if status_code == 0 then
                 pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
             else
                 pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
                     command_name, status_name, status_code, length))
             end
+            return total_len
         end
-    end)
 
-    -- Handle dissection errors
-    if not status then
-        local subtree = tree:add(iggy, buffer(), "Iggy Protocol (Dissection Error)")
-        subtree:add_proto_expert_info(ef_dissection_error,
-            string.format("Error: %s", err))
-        pinfo.cols.info:set("Dissection error")
-        return buflen
+        -- After this point, command_info is guaranteed to exist
+        local command_name = command_info.name
+        subtree:add(cf.req_command_name, command_name):set_generated()
+
+        -- Payload (only for status_code is 0(OK))
+        if payload_len > 0 and status_code == 0 then
+            local payload_tree = subtree:add(cf.resp_payload, buffer(payload_offset, payload_len))
+            command_info.response_payload_dissector(command_info, buffer, payload_tree, payload_offset)
+        end
+
+        -- Update info column
+        if status_code == 0 then
+            pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
+        else
+            pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
+                command_name, status_name, status_code, length))
+        end
     end
 
     return total_len
