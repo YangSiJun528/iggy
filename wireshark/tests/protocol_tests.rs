@@ -18,6 +18,7 @@ const DEFAULT_ROOT_PASSWORD: &str = "iggy";
 /// Server configuration - change these constants to match your server setup
 const SERVER_IP: &str = "127.0.0.1";
 const SERVER_TCP_PORT: u16 = 8090;
+const SERVER_CONNECT_TIMEOUT_MS: u64 = 5000;
 
 /// Timing constants for packet capture tests
 const CAPTURE_START_WAIT_MS: u64 = 1000;
@@ -226,8 +227,11 @@ impl TestFixture {
         self.capture.capture()?;
         sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
 
-        // Connect client
-        self.client.connect().await?;
+        // Connect client with timeout
+        tokio::time::timeout(
+            Duration::from_millis(SERVER_CONNECT_TIMEOUT_MS),
+            self.client.connect()
+        ).await??;
 
         // Login if requested
         if login {
