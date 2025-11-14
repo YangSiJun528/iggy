@@ -387,7 +387,7 @@ function iggy.dissector(buffer, pinfo, tree)
         subtree:add_le(cf.resp_status, buffer(0, 4))
         subtree:add_le(cf.resp_length, buffer(4, 4))
 
-        local status_name = STATUS_CODES[status_code] or (status_code == 0 and "OK" or string.format("Error(%d)", status_code))
+        local status_name = STATUS_CODES[status_code] or (status_code == 0 and "ok" or string.format("Error(%d)", status_code))
         subtree:add(cf.resp_status_name, status_name):set_generated()
 
         local request_data = request_tracker:find_request(pinfo)
@@ -414,7 +414,7 @@ function iggy.dissector(buffer, pinfo, tree)
             end
 
             if status_code == 0 then
-                pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
+                pinfo.cols.info:set(string.format("Response: %s ok (length=%d)", command_name, length))
             else
                 pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
                     command_name, status_name, status_code, length))
@@ -431,7 +431,7 @@ function iggy.dissector(buffer, pinfo, tree)
         end
 
         if status_code == 0 then
-            pinfo.cols.info:set(string.format("Response: %s OK (length=%d)", command_name, length))
+            pinfo.cols.info:set(string.format("Response: %s ok (length=%d)", command_name, length))
         else
             pinfo.cols.info:set(string.format("Response: %s %s (status=%d, length=%d)",
                 command_name, status_name, status_code, length))

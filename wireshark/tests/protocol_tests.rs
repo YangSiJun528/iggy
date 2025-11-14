@@ -11,21 +11,17 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
-/// Default credentials for Iggy server
 const DEFAULT_ROOT_USERNAME: &str = "iggy";
 const DEFAULT_ROOT_PASSWORD: &str = "iggy";
 
-/// Server configuration - change these constants to match your server setup
 const SERVER_IP: &str = "127.0.0.1";
 const SERVER_TCP_PORT: u16 = 8090;
 const SERVER_CONNECT_TIMEOUT_MS: u64 = 5000;
 
-/// Timing constants for packet capture tests
 const CAPTURE_START_WAIT_MS: u64 = 1000;
 const OPERATION_WAIT_MS: u64 = 2000;
 const CAPTURE_STOP_WAIT_MS: u64 = 500;
 
-/// Helper function to extract and parse iggy field values (returns Result)
 fn get_field<T>(iggy: &Value, field: &str) -> Result<T, String>
 where
     T: FromStr,
@@ -38,7 +34,6 @@ where
         .map_err(|e| format!("Failed to parse {}: {}", field, e))
 }
 
-/// Helper function to extract and parse iggy field values (panics on error)
 fn expect_field<T>(iggy: &Value, field: &str) -> T
 where
     T: FromStr,
@@ -47,26 +42,21 @@ where
     get_field(iggy, field).unwrap_or_else(|e| panic!("{}", e))
 }
 
-/// Convert status code to status name
-/// Status code 0 = "ok", other codes map to IggyError variants
 fn status_code_to_name(status_code: u32) -> &'static str {
     if status_code == 0 {
         return "ok";
     }
 
-    // IggyError is repr(u32), so we can convert the status code to IggyError
     match IggyError::from_repr(status_code) {
         Some(error) => error.into(),
         None => "unknown",
     }
 }
 
-/// Check if tshark is available in the system
 fn check_tshark_available() -> bool {
     ProcessCommand::new("tshark").arg("--version").output().is_ok()
 }
 
-/// Helper struct to manage tshark packet capture
 struct TsharkCapture {
     ip: String,
     port: u16,
@@ -94,7 +84,6 @@ impl TsharkCapture {
     }
 
     fn capture(&mut self) -> io::Result<()> {
-        // Find dissector.lua in the workspace root
         let dissector_path = std::env::current_dir()?.join("dissector.lua");
 
         if !dissector_path.exists() {
@@ -138,7 +127,6 @@ impl TsharkCapture {
     }
 
     fn analyze(&self) -> io::Result<Vec<Value>> {
-        // Find dissector.lua in the workspace root
         let dissector_path = std::env::current_dir()?.join("dissector.lua");
 
         if !dissector_path.exists() {
@@ -163,7 +151,7 @@ impl TsharkCapture {
                 &lua_script_arg,
                 "-o",
                 &port_config_arg,
-                "-V", // Verbose output
+                "-V",
             ])
             .output()?;
 
@@ -195,7 +183,6 @@ impl Drop for TsharkCapture {
     }
 }
 
-/// Test fixture that manages tshark capture and client lifecycle
 struct TestFixture {
     capture: TsharkCapture,
     client: IggyClient,
@@ -221,19 +208,15 @@ impl TestFixture {
         Self { capture, client }
     }
 
-    /// Setup test fixture: start packet capture and connect client
     async fn start(&mut self, login: bool) -> Result<(), Box<dyn std::error::Error>> {
-        // Start tshark capture
         self.capture.capture()?;
         sleep(Duration::from_millis(CAPTURE_START_WAIT_MS)).await;
 
-        // Connect client with timeout
         tokio::time::timeout(
             Duration::from_millis(SERVER_CONNECT_TIMEOUT_MS),
             self.client.connect()
         ).await??;
 
-        // Login if requested
         if login {
             self.client
                 .login_user(DEFAULT_ROOT_USERNAME, DEFAULT_ROOT_PASSWORD)
@@ -243,11 +226,9 @@ impl TestFixture {
         Ok(())
     }
 
-    /// Stop packet capture and analyze captured packets
     async fn stop_and_analyze(&mut self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         sleep(Duration::from_millis(OPERATION_WAIT_MS)).await;
 
-        // Disconnect client before stopping capture
         self.client.disconnect().await?;
 
         self.capture.stop();
@@ -266,7 +247,6 @@ impl TestFixture {
     }
 }
 
-/// Helper function to extract iggy layer from tshark output packets
 fn extract_iggy_layers(packets: &[Value]) -> Vec<&Value> {
     packets
         .iter()
@@ -274,13 +254,10 @@ fn extract_iggy_layers(packets: &[Value]) -> Vec<&Value> {
         .collect()
 }
 
-/// Find request and response packet pair by command ID
-/// Returns (request, response) where response comes after request in the packet list
 fn find_request_response<'a>(
     iggy_layers: &[&'a Value],
     command_id: u32,
 ) -> Result<(&'a Value, &'a Value), Box<dyn std::error::Error>> {
-    // Find request packet index
     let req_idx = iggy_layers
         .iter()
         .position(|iggy| {
@@ -293,11 +270,9 @@ fn find_request_response<'a>(
 
     let req = iggy_layers[req_idx];
 
-    // Get command name from request
     let command_name: String = get_field(req, "iggy.request.command_name")
         .map_err(|e| format!("Failed to get command name from request: {}", e))?;
 
-    // Find response packet after the request
     let resp = iggy_layers[req_idx + 1..]
         .iter()
         .find(|iggy| {
