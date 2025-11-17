@@ -27,7 +27,7 @@ Copy the dissector to Wireshark plugins directory:
 cp ./wireshark/dissector.lua ~/.local/lib/wireshark/plugins/
 ```
 
-Reload plugins in Wireshark: `Analyze → Reload Lua Plugins` (Ctrl+Shift+L)
+Reload plugins in Wireshark: `Analyze → Reload Lua Plugins`
 
 ### Troubleshooting
 
@@ -40,10 +40,11 @@ rm ~/.local/lib/wireshark/plugins/dissector.lua
 
 Filter Iggy traffic in Wireshark: `iggy`
 
-## Documentation
+## Known Limitations & TODO
 
-- [DISSECTOR_GUIDE.md](DISSECTOR_GUIDE.md) - Development guide
-- [REQUEST_RESPONSE_TRACKER.md](REQUEST_RESPONSE_TRACKER.md) - Request/response matching
-- [SPEC.md](SPEC.md) - Protocol specification
+- QUIC protocol support not yet implemented
+- Only a subset of Iggy commands currently supported
+- Test code needs refactoring for better readability
+- Test server should be isolated with a dedicated test script
 
 
