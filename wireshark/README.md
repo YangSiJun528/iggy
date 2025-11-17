@@ -21,7 +21,7 @@ Wireshark dissector for analyzing Iggy protocol traffic, written in Lua.
 
 ## Wireshark Plugin Setup
 
-1. Copy the dissector to Wireshark plugins directory(Mac 기준):
+1. Copy the dissector to Wireshark plugins directory (macOS):
    ```bash
    cp ./wireshark/dissector.lua ~/.local/lib/wireshark/plugins/
    ```
@@ -32,9 +32,9 @@ Wireshark dissector for analyzing Iggy protocol traffic, written in Lua.
 
 ### Configuration
 
-프로토콜 분석 시 사용하는 기본 포트는 8090임. 만약 다른 포트를 사용한다면 target port를 변경해야 함.
+The default port used for protocol analysis is 8090. If using a different port, you need to change the target port.
 
-Change the target port in preferences(Mac 기준): `Wireshark → Preferences → Protocols → IGGY → Server Port`
+Change the target port in preferences (macOS): `Wireshark → Preferences → Protocols → IGGY → Server Port`
 
 ### Troubleshooting
 
@@ -46,7 +46,7 @@ rm ~/.local/lib/wireshark/plugins/dissector.lua
 ## Known Limitations & TODO
 
 - QUIC protocol support not yet implemented
-- 서버가 로컬에 실행중이여야 분석 가능
+- Server must be running locally for analysis
 - Only a subset of Iggy commands currently supported
 - Test code needs refactoring for better readability
 - Test server should be isolated with a dedicated test script
