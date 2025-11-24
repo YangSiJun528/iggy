@@ -51,9 +51,6 @@ nextests TEST: build
 server:
   cargo run --bin iggy-server
 
-build-tokio-console:
-  RUSTFLAGS="--cfg tokio_unstable" cargo build --release --features tokio-console
-
 run-benches:
   ./scripts/run-benches.sh
 
@@ -70,16 +67,16 @@ profile-io-client:
   ./scripts/profile.sh iggy-bench io
 
 licenses-fix:
-  docker run --rm -v $(pwd):/src -w /src ghcr.io/google/addlicense:latest -f ASF_LICENSE.txt .
+  ./scripts/ci/license-headers.sh --fix
 
 licenses-check:
-  docker run --rm -v $(pwd):/src -w /src ghcr.io/google/addlicense:latest -check -f ASF_LICENSE.txt .
+  ./scripts/ci/license-headers.sh --check
 
 licenses-list-check:
-  ./scripts/licenses-list.sh --check
+  ./scripts/ci/licenses-list.sh --check
 
 licenses-list-fix:
-  ./scripts/licenses-list.sh --update
+  ./scripts/ci/licenses-list.sh --fix
 
 markdownlint:
   markdownlint '**/*.md' --ignore-path .gitignore

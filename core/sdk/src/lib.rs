@@ -16,13 +16,14 @@
  * under the License.
  */
 
-#[allow(deprecated)]
 pub mod client_provider;
 pub mod client_wrappers;
 pub mod clients;
 pub mod consumer_ext;
 pub mod http;
+mod leader_aware;
 pub mod prelude;
 pub mod quic;
 pub mod stream_builder;
 pub mod tcp;
+pub mod websocket;

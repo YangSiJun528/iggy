@@ -19,8 +19,7 @@
 use crate::prelude::IggyClient;
 use async_trait::async_trait;
 use iggy_binary_protocol::ClusterClient;
-use iggy_common::locking::IggySharedMutFn;
-use iggy_common::{ClusterMetadata, IggyError};
+use iggy_common::{ClusterMetadata, IggyError, locking::IggyRwLockFn};
 
 #[async_trait]
 impl ClusterClient for IggyClient {

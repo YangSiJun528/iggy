@@ -16,10 +16,9 @@
  * under the License.
  */
 
-use crate::clients::client_builder::IggyClientBuilder;
-use iggy_common::locking::{IggySharedMut, IggySharedMutFn};
-
 use crate::client_wrappers::client_wrapper::ClientWrapper;
+use crate::client_wrappers::connection_info::ConnectionInfo;
+use crate::clients::client_builder::IggyClientBuilder;
 use crate::http::http_client::HttpClient;
 use crate::prelude::EncryptorKind;
 use crate::prelude::IggyConsumerBuilder;
@@ -27,12 +26,13 @@ use crate::prelude::IggyError;
 use crate::prelude::IggyProducerBuilder;
 use crate::quic::quic_client::QuicClient;
 use crate::tcp::tcp_client::TcpClient;
+use crate::websocket::websocket_client::WebSocketClient;
 use async_broadcast::Receiver;
 use async_trait::async_trait;
 use iggy_binary_protocol::{Client, SystemClient};
-use iggy_common::{
-    ConnectionStringUtils, Consumer, DiagnosticEvent, Partitioner, TransportProtocol,
-};
+use iggy_common::Consumer;
+use iggy_common::locking::{IggyRwLock, IggyRwLockFn};
+use iggy_common::{ConnectionStringUtils, DiagnosticEvent, Partitioner, TransportProtocol};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tokio::spawn;
@@ -46,7 +46,7 @@ use tracing::{debug, error, info};
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct IggyClient {
-    pub(crate) client: IggySharedMut<ClientWrapper>,
+    pub(crate) client: IggyRwLock<ClientWrapper>,
     partitioner: Option<Arc<dyn Partitioner>>,
     pub(crate) encryptor: Option<Arc<EncryptorKind>>,
 }
@@ -72,7 +72,7 @@ impl IggyClient {
 
     /// Creates a new `IggyClient` with the provided client implementation for the specific transport.
     pub fn new(client: ClientWrapper) -> Self {
-        let client = IggySharedMut::new(client);
+        let client = IggyRwLock::new(client);
         IggyClient {
             client,
             partitioner: None,
@@ -92,6 +92,9 @@ impl IggyClient {
             TransportProtocol::Http => Ok(IggyClient::new(ClientWrapper::Http(
                 HttpClient::from_connection_string(connection_string)?,
             ))),
+            TransportProtocol::WebSocket => Ok(IggyClient::new(ClientWrapper::WebSocket(
+                WebSocketClient::from_connection_string(connection_string)?,
+            ))),
         }
     }
 
@@ -108,7 +111,7 @@ impl IggyClient {
             info!("Client-side encryption is enabled.");
         }
 
-        let client = IggySharedMut::new(client);
+        let client = IggyRwLock::new(client);
         IggyClient {
             client,
             partitioner,
@@ -117,7 +120,7 @@ impl IggyClient {
     }
 
     /// Returns the underlying client implementation for the specific transport.
-    pub fn client(&self) -> IggySharedMut<ClientWrapper> {
+    pub fn client(&self) -> IggyRwLock<ClientWrapper> {
         self.client.clone()
     }
 
@@ -171,6 +174,13 @@ impl IggyClient {
             self.encryptor.clone(),
             None,
         ))
+    }
+
+    /// Returns the current connection information including the transport protocol and server address.
+    /// This is useful for verifying which server the client is connected to, especially after
+    /// leader redirection in a clustered environment.
+    pub async fn get_connection_info(&self) -> ConnectionInfo {
+        self.client.read().await.get_connection_info().await
     }
 }
 

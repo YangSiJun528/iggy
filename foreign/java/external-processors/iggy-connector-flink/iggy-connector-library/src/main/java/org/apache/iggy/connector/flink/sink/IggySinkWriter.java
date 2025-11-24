@@ -19,16 +19,17 @@
 
 package org.apache.iggy.connector.flink.sink;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.iggy.client.blocking.http.IggyHttpClient;
+import org.apache.iggy.connector.error.ConnectorException;
+import org.apache.iggy.connector.serialization.SerializationSchema;
 import org.apache.iggy.identifier.StreamId;
 import org.apache.iggy.identifier.TopicId;
 import org.apache.iggy.message.Message;
 import org.apache.iggy.message.MessageHeader;
 import org.apache.iggy.message.MessageId;
 import org.apache.iggy.message.Partitioning;
-import org.apache.iggy.connector.error.ConnectorException;
-import org.apache.iggy.connector.serialization.SerializationSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,8 +39,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.zip.CRC32;
-import java.util.zip.Checksum;
 
 /**
  * Sink writer implementation for writing records to Iggy.
@@ -47,7 +46,7 @@ import java.util.zip.Checksum;
  */
 public class IggySinkWriter<T> implements SinkWriter<T> {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(IggySinkWriter.class);
+    private static final Logger log = LoggerFactory.getLogger(IggySinkWriter.class);
 
     private final IggyHttpClient httpClient;
     private final String streamId;
@@ -73,12 +72,12 @@ public class IggySinkWriter<T> implements SinkWriter<T> {
     /**
      * Creates a new sink writer.
      *
-     * @param httpClient the HTTP Iggy client
-     * @param streamId the stream identifier
-     * @param topicId the topic identifier
-     * @param serializer the serialization schema
-     * @param batchSize maximum number of records to buffer before flushing
-     * @param flushInterval maximum time to wait before flushing
+     * @param httpClient           the HTTP Iggy client
+     * @param streamId             the stream identifier
+     * @param topicId              the topic identifier
+     * @param serializer           the serialization schema
+     * @param batchSize            maximum number of records to buffer before flushing
+     * @param flushInterval        maximum time to wait before flushing
      * @param partitioningStrategy the partitioning strategy
      */
     public IggySinkWriter(
@@ -93,10 +92,10 @@ public class IggySinkWriter<T> implements SinkWriter<T> {
         if (httpClient == null) {
             throw new IllegalArgumentException("httpClient cannot be null");
         }
-        if (streamId == null || streamId.isEmpty()) {
+        if (StringUtils.isBlank(streamId)) {
             throw new IllegalArgumentException("streamId cannot be null or empty");
         }
-        if (topicId == null || topicId.isEmpty()) {
+        if (StringUtils.isBlank(topicId)) {
             throw new IllegalArgumentException("topicId cannot be null or empty");
         }
         if (serializer == null) {
@@ -115,9 +114,7 @@ public class IggySinkWriter<T> implements SinkWriter<T> {
         this.serializer = serializer;
         this.batchSize = batchSize;
         this.flushInterval = flushInterval;
-        this.partitioningStrategy = partitioningStrategy != null
-                ? partitioningStrategy
-                : PartitioningStrategy.BALANCED;
+        this.partitioningStrategy = partitioningStrategy != null ? partitioningStrategy : PartitioningStrategy.BALANCED;
 
         this.buffer = new ArrayList<>(batchSize);
         this.lastFlushTime = System.currentTimeMillis();
@@ -126,13 +123,12 @@ public class IggySinkWriter<T> implements SinkWriter<T> {
 
     @Override
     public void write(T element, Context context) throws IOException {
-        LOGGER.debug("IggySinkWriter.write() called - element: {}, buffer size: {}",
-                element, buffer.size());
+        log.debug("IggySinkWriter.write() called - element: {}, buffer size: {}", element, buffer.size());
         buffer.add(element);
 
         // Flush if batch size reached or flush interval exceeded
         if (buffer.size() >= batchSize || shouldFlushByTime()) {
-            LOGGER.debug("IggySinkWriter: Flushing buffer of size {}", buffer.size());
+            log.debug("IggySinkWriter: Flushing buffer of size {}", buffer.size());
             flush(false);
         }
     }
@@ -140,12 +136,15 @@ public class IggySinkWriter<T> implements SinkWriter<T> {
     @Override
     public void flush(boolean endOfInput) throws IOException {
         if (buffer.isEmpty()) {
-            LOGGER.debug("IggySinkWriter.flush() - buffer is empty, skipping");
+            log.debug("IggySinkWriter.flush() - buffer is empty, skipping");
             return;
         }
 
-        LOGGER.debug("IggySinkWriter.flush() - flushing {} messages to stream={}, topic={}",
-            buffer.size(), streamId, topicId);
+        log.debug(
+                "IggySinkWriter.flush() - flushing {} messages to stream={}, topic={}",
+                buffer.size(),
+                streamId,
+                topicId);
 
         try {
             // Serialize all buffered records
@@ -163,25 +162,20 @@ public class IggySinkWriter<T> implements SinkWriter<T> {
             StreamId stream = parseStreamId(streamId);
             TopicId topic = parseTopicId(topicId);
 
-            LOGGER.debug("IggySinkWriter: Sending {} messages with partitioning={}",
-                    messages.size(), partitioning);
+            log.debug("IggySinkWriter: Sending {} messages with partitioning={}", messages.size(), partitioning);
             httpClient.messages().sendMessages(stream, topic, partitioning, messages);
 
             totalWritten += buffer.size();
-            LOGGER.debug("IggySinkWriter: Successfully sent {} messages. Total written: {}",
-                    buffer.size(), totalWritten);
+            log.debug("IggySinkWriter: Successfully sent {} messages. Total written: {}", buffer.size(), totalWritten);
 
             // Clear buffer and update flush time
             buffer.clear();
             lastFlushTime = System.currentTimeMillis();
 
-        } catch (Exception e) {
-            LOGGER.error("IggySinkWriter.flush() - ERROR: {}", e.getMessage(), e);
+        } catch (RuntimeException e) {
+            log.error("IggySinkWriter.flush() - ERROR: {}", e.getMessage(), e);
             throw new ConnectorException(
-                    "Failed to send messages to Iggy",
-                    e,
-                    ConnectorException.ErrorCode.RESOURCE_EXHAUSTED,
-                    true);
+                    "Failed to send messages to Iggy", e, ConnectorException.ErrorCode.RESOURCE_EXHAUSTED, true);
         }
     }
 
@@ -285,18 +279,14 @@ public class IggySinkWriter<T> implements SinkWriter<T> {
      * @return a Message instance
      */
     private Message createMessage(byte[] payload) {
-        Checksum crc32 = new CRC32();
-        crc32.update(payload, 0, payload.length);
-        BigInteger checksum = BigInteger.valueOf(crc32.getValue());
-
         MessageHeader header = new MessageHeader(
-                checksum,
+                BigInteger.ZERO,
                 MessageId.serverGenerated(),
-                BigInteger.ZERO,  // offset
-                BigInteger.ZERO,  // timestamp
-                BigInteger.ZERO,  // originTimestamp
-                0L,               // userHeadersLength
-                (long) payload.length);  // payloadLength
+                BigInteger.ZERO, // offset
+                BigInteger.ZERO, // timestamp
+                BigInteger.ZERO, // originTimestamp
+                0L, // userHeadersLength
+                (long) payload.length); // payloadLength
 
         return new Message(header, payload, Optional.empty());
     }

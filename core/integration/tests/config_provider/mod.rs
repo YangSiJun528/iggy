@@ -16,30 +16,27 @@
  * under the License.
  */
 
-use iggy_common::{ConfigProvider, ConfigurationError, FileConfigProvider};
 use integration::file::{file_exists, get_root_path};
 use serial_test::serial;
-use server::configs::server::{ServerConfig, ServerEnvProvider};
+use server::configs::config_provider::{ConfigProvider, FileConfigProvider};
 use std::env;
 
 async fn scenario_parsing_from_file(extension: &str) {
     let mut config_path = get_root_path().join("../configs/server");
     assert!(config_path.set_extension(extension), "Cannot set extension");
     let config_path = config_path.as_path().display().to_string();
-    let config_provider = get_file_config_provider();
+    let config_provider = FileConfigProvider::new(config_path.clone());
     assert!(
         file_exists(&config_path),
         "Config file not found: {config_path}"
     );
     assert!(
-        ConfigProvider::<ServerConfig>::load_config(config_provider)
-            .await
-            .is_ok(),
+        config_provider.load_config().await.is_ok(),
         "ConfigProvider failed to parse config from {config_path}"
     );
 }
 
-#[tokio::test]
+#[compio::test]
 async fn validate_server_config_toml_from_repository() {
     scenario_parsing_from_file("toml").await;
 }
@@ -47,7 +44,7 @@ async fn validate_server_config_toml_from_repository() {
 // This test needs to be run in serial because it modifies the environment variables
 // which are shared, since all tests run in parallel by default.
 #[serial]
-#[tokio::test]
+#[compio::test]
 async fn validate_custom_env_provider() {
     let expected_datagram_send_buffer_size = "1.00 KB";
     let expected_quic_certificate_self_signed = false;
@@ -74,8 +71,9 @@ async fn validate_custom_env_provider() {
         env::set_var("IGGY_SYSTEM_SEGMENT_MESSAGE_EXPIRY", "10s");
     }
 
-    let file_config_provider = get_file_config_provider();
-    let config: ServerConfig = file_config_provider
+    let config_path = get_root_path().join("../configs/server.toml");
+    let file_config_provider = FileConfigProvider::new(config_path.as_path().display().to_string());
+    let config = file_config_provider
         .load_config()
         .await
         .expect("Failed to load default server.toml config");
@@ -112,20 +110,20 @@ async fn validate_custom_env_provider() {
 async fn validate_cluster_config_env_override() {
     // Test data for cluster configuration
     let expected_cluster_enabled = true;
-    let expected_cluster_id = 42;
+    let expected_cluster_id = 0;
     let expected_cluster_name = "test-cluster";
-    let expected_node_id = 5;
+    let expected_node_id = 0;
 
     // Test data for cluster nodes array
-    let expected_node_0_id = 10;
+    let expected_node_0_id = 0;
     let expected_node_0_name = "test-node-1";
     let expected_node_0_address = "192.168.1.100:9090";
 
-    let expected_node_1_id = 20;
+    let expected_node_1_id = 1;
     let expected_node_1_name = "test-node-2";
     let expected_node_1_address = "192.168.1.101:9091";
 
-    let expected_node_2_id = 30;
+    let expected_node_2_id = 2;
     let expected_node_2_name = "test-node-3";
     let expected_node_2_address = "192.168.1.102:9092";
 
@@ -150,8 +148,9 @@ async fn validate_cluster_config_env_override() {
         env::set_var("IGGY_CLUSTER_NODES_2_ADDRESS", expected_node_2_address);
     }
 
-    let file_config_provider = get_file_config_provider();
-    let config: ServerConfig = file_config_provider
+    let config_path = get_root_path().join("../configs/server.toml");
+    let file_config_provider = FileConfigProvider::new(config_path.as_path().display().to_string());
+    let config = file_config_provider
         .load_config()
         .await
         .expect("Failed to load server.toml config with cluster env overrides");
@@ -218,8 +217,9 @@ async fn validate_cluster_partial_env_override() {
         env::set_var("IGGY_CLUSTER_NODES_1_ADDRESS", expected_node_1_address);
     }
 
-    let file_config_provider = get_file_config_provider();
-    let config: ServerConfig = file_config_provider
+    let config_path = get_root_path().join("../configs/server.toml");
+    let file_config_provider = FileConfigProvider::new(config_path.as_path().display().to_string());
+    let config = file_config_provider
         .load_config()
         .await
         .expect("Failed to load server.toml config with partial cluster env overrides");
@@ -230,9 +230,9 @@ async fn validate_cluster_partial_env_override() {
 
     // Verify non-overridden values remain default
     assert_eq!(config.cluster.name, "iggy-cluster"); // default from server.toml
-    assert_eq!(config.cluster.nodes[0].id, 1); // default from server.toml
+    assert_eq!(config.cluster.nodes[0].id, 0); // default from server.toml
     assert_eq!(config.cluster.nodes[0].name, "iggy-node-1"); // default from server.toml
-    assert_eq!(config.cluster.nodes[1].id, 2); // default from server.toml
+    assert_eq!(config.cluster.nodes[1].id, 1); // default from server.toml
     assert_eq!(config.cluster.nodes[1].name, "iggy-node-2"); // default from server.toml
 
     unsafe {
@@ -260,10 +260,11 @@ async fn validate_cluster_sparse_array_fails_with_missing_fields() {
         env::set_var("IGGY_CLUSTER_NODES_5_ADDRESS", expected_node_5_address);
     }
 
-    let file_config_provider = get_file_config_provider();
+    let config_path = get_root_path().join("../configs/server.toml");
+    let file_config_provider = FileConfigProvider::new(config_path.as_path().display().to_string());
 
     // This should fail because nodes 2-4 will be missing required fields
-    let result: Result<ServerConfig, ConfigurationError> = file_config_provider.load_config().await;
+    let result = file_config_provider.load_config().await;
     assert!(
         result.is_err(),
         "Should fail to load config with sparse array due to missing required fields in intermediate elements"
@@ -281,7 +282,7 @@ async fn validate_cluster_sparse_array_fails_with_missing_fields() {
 #[tokio::test]
 async fn validate_cluster_contiguous_array_override() {
     // Add node at index 2 (TOML has nodes 0 and 1, so this is contiguous)
-    let expected_node_2_id = 50;
+    let expected_node_2_id = 2;
     let expected_node_2_name = "iggy-node-3";
     let expected_node_2_address = "10.0.0.50:8092";
 
@@ -291,8 +292,9 @@ async fn validate_cluster_contiguous_array_override() {
         env::set_var("IGGY_CLUSTER_NODES_2_ADDRESS", expected_node_2_address);
     }
 
-    let file_config_provider = get_file_config_provider();
-    let config: ServerConfig = file_config_provider
+    let config_path = get_root_path().join("../configs/server.toml");
+    let file_config_provider = FileConfigProvider::new(config_path.as_path().display().to_string());
+    let config = file_config_provider
         .load_config()
         .await
         .expect("Failed to load server.toml config with contiguous array override");
@@ -305,9 +307,9 @@ async fn validate_cluster_contiguous_array_override() {
     );
 
     // Check original nodes are preserved
-    assert_eq!(config.cluster.nodes[0].id, 1); // from TOML
+    assert_eq!(config.cluster.nodes[0].id, 0); // from TOML
     assert_eq!(config.cluster.nodes[0].name, "iggy-node-1"); // from TOML
-    assert_eq!(config.cluster.nodes[1].id, 2); // from TOML
+    assert_eq!(config.cluster.nodes[1].id, 1); // from TOML
     assert_eq!(config.cluster.nodes[1].name, "iggy-node-2"); // from TOML
 
     // Check the node we added at index 2
@@ -320,9 +322,4 @@ async fn validate_cluster_contiguous_array_override() {
         env::remove_var("IGGY_CLUSTER_NODES_2_NAME");
         env::remove_var("IGGY_CLUSTER_NODES_2_ADDRESS");
     }
-}
-
-fn get_file_config_provider() -> FileConfigProvider<ServerEnvProvider> {
-    let config_path = get_root_path().join("../configs/server.toml");
-    ServerConfig::file_config_provider(config_path.as_path().display().to_string())
 }

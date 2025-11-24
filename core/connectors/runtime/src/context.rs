@@ -1,4 +1,5 @@
-/* Licensed to the Apache Software Foundation (ASF) under one
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
  * regarding copyright ownership.  The ASF licenses this file
@@ -15,43 +16,50 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
+use crate::configs::connectors::{ConnectorsConfigProvider, SinkConfig, SourceConfig};
+use crate::configs::runtime::ConnectorsRuntimeConfig;
 use crate::{
     SinkConnectorWrapper, SourceConnectorWrapper,
-    configs::ConnectorsConfig,
     manager::{
         sink::{SinkDetails, SinkInfo, SinkManager},
         source::{SourceDetails, SourceInfo, SourceManager},
     },
 };
+use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::error;
 
 pub struct RuntimeContext {
     pub sinks: SinkManager,
     pub sources: SourceManager,
     pub api_key: String,
+    pub config_provider: Arc<dyn ConnectorsConfigProvider>,
 }
 
 pub fn init(
-    config: &ConnectorsConfig,
+    config: &ConnectorsRuntimeConfig,
+    sinks_config: &HashMap<String, SinkConfig>,
+    sources_config: &HashMap<String, SourceConfig>,
     sink_wrappers: &[SinkConnectorWrapper],
     source_wrappers: &[SourceConnectorWrapper],
+    config_provider: Box<dyn ConnectorsConfigProvider>,
 ) -> RuntimeContext {
     RuntimeContext {
-        sinks: SinkManager::new(map_sinks(config, sink_wrappers)),
-        sources: SourceManager::new(map_sources(config, source_wrappers)),
+        sinks: SinkManager::new(map_sinks(sinks_config, sink_wrappers)),
+        sources: SourceManager::new(map_sources(sources_config, source_wrappers)),
         api_key: config.http.api_key.to_owned(),
+        config_provider: Arc::from(config_provider),
     }
 }
 
 fn map_sinks(
-    config: &ConnectorsConfig,
+    sinks_config: &HashMap<String, SinkConfig>,
     sink_wrappers: &[SinkConnectorWrapper],
 ) -> Vec<SinkDetails> {
     let mut sinks = vec![];
     for sink_wrapper in sink_wrappers.iter() {
         for sink_plugin in sink_wrapper.plugins.iter() {
-            let Some(sink_config) = config.sinks.get(&sink_plugin.key) else {
+            let Some(sink_config) = sinks_config.get(&sink_plugin.key) else {
                 error!("Missing sink config for: {}", sink_plugin.key);
                 continue;
             };
@@ -64,11 +72,9 @@ fn map_sinks(
                     path: sink_plugin.path.to_owned(),
                     enabled: sink_config.enabled,
                     running: sink_config.enabled,
-                    config_format: sink_plugin.config_format,
+                    plugin_config_format: sink_plugin.config_format,
                 },
-                config: sink_config.config.clone(),
-                transforms: sink_config.transforms.clone(),
-                streams: sink_config.streams.clone(),
+                config: sink_config.clone(),
             });
         }
     }
@@ -76,13 +82,13 @@ fn map_sinks(
 }
 
 fn map_sources(
-    config: &ConnectorsConfig,
+    sources_config: &HashMap<String, SourceConfig>,
     source_wrappers: &[SourceConnectorWrapper],
 ) -> Vec<SourceDetails> {
     let mut sources = vec![];
     for source_wrapper in source_wrappers.iter() {
         for source_plugin in source_wrapper.plugins.iter() {
-            let Some(source_config) = config.sources.get(&source_plugin.key) else {
+            let Some(source_config) = sources_config.get(&source_plugin.key) else {
                 error!("Missing source config for: {}", source_plugin.key);
                 continue;
             };
@@ -95,11 +101,9 @@ fn map_sources(
                     path: source_plugin.path.to_owned(),
                     enabled: source_config.enabled,
                     running: source_config.enabled,
-                    config_format: source_plugin.config_format,
+                    plugin_config_format: source_plugin.config_format,
                 },
-                config: source_config.config.clone(),
-                transforms: source_config.transforms.clone(),
-                streams: source_config.streams.clone(),
+                config: source_config.clone(),
             });
         }
     }

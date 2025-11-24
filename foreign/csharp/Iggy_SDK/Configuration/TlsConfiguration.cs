@@ -17,9 +17,23 @@
 
 namespace Apache.Iggy.Configuration;
 
+/// <summary>
+///     TLS configuration
+/// </summary>
 public class TlsSettings
 {
+    /// <summary>
+    ///     Whether TLS is enabled.
+    /// </summary>
     public bool Enabled { get; set; }
+
+    /// <summary>
+    ///     The name of the server for TLS handshake.
+    /// </summary>
     public string Hostname { get; set; } = string.Empty;
-    public bool Authenticate { get; set; }
+
+    /// <summary>
+    ///     Path to the certificate (ca/self-signed) file.
+    /// </summary>
+    public string CertificatePath { get; set; } = string.Empty;
 }
