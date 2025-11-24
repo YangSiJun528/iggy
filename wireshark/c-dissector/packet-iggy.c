@@ -9,12 +9,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "config.h"
 #include <epan/packet.h>
 #include <epan/prefs.h>
 #include <epan/conversation.h>
 #include <epan/wmem_scopes.h>
 #include <epan/expert.h>
+#include <epan/proto.h>
+#include <epan/dissectors/packet-tcp.h>
 
 #define IGGY_DEFAULT_PORT 8090
 #define IGGY_MIN_LENGTH 8
@@ -188,10 +189,9 @@ find_matching_request(packet_info *pinfo)
 
     /* First pass - match with first pending request */
     if (!pinfo->fd->visited && wmem_list_count(conv_data->pending_requests) > 0) {
-        req_data = (iggy_request_data_t *)wmem_list_remove_frame(
-            conv_data->pending_requests,
-            wmem_list_head(conv_data->pending_requests)
-        );
+        wmem_list_frame_t *frame = wmem_list_head(conv_data->pending_requests);
+        req_data = (iggy_request_data_t *)wmem_list_frame_data(frame);
+        wmem_list_remove_frame(conv_data->pending_requests, frame);
         wmem_tree_insert32(conv_data->matched_responses, pinfo->num, req_data);
         return req_data;
     }
@@ -201,7 +201,7 @@ find_matching_request(packet_info *pinfo)
 
 /* Get command name from command code */
 static const char*
-get_command_name(uint32_t command_code)
+get_command_name(packet_info *pinfo, uint32_t command_code)
 {
     switch (command_code) {
         case IGGY_CMD_PING:
@@ -211,7 +211,7 @@ get_command_name(uint32_t command_code)
         case IGGY_CMD_TOPIC_CREATE:
             return "topic.create";
         default:
-            return wmem_strdup_printf(wmem_packet_scope(), "Unimplemented (%u)", command_code);
+            return wmem_strdup_printf(pinfo->pool, "Unimplemented (%u)", command_code);
     }
 }
 
@@ -265,7 +265,7 @@ dissect_login_response(tvbuff_t *tvb, proto_tree *tree, unsigned *offset)
 
 /* Dissect topic create request payload */
 static void
-dissect_topic_create_request(tvbuff_t *tvb, proto_tree *tree, unsigned *offset)
+dissect_topic_create_request(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, unsigned *offset)
 {
     uint8_t stream_id_kind, stream_id_length, name_len;
     proto_item *kind_item;
@@ -274,7 +274,7 @@ dissect_topic_create_request(tvbuff_t *tvb, proto_tree *tree, unsigned *offset)
     stream_id_kind = tvb_get_uint8(tvb, *offset);
     kind_item = proto_tree_add_item(tree, hf_iggy_create_topic_stream_id_kind, tvb, *offset, 1, ENC_NA);
     proto_item_append_text(kind_item, " (%s)",
-        val_to_str(stream_id_kind, iggy_stream_id_kind_vals, "Unknown: %d"));
+        val_to_str(pinfo->pool, stream_id_kind, iggy_stream_id_kind_vals, "Unknown: %d"));
     *offset += 1;
 
     stream_id_length = tvb_get_uint8(tvb, *offset);
@@ -394,7 +394,7 @@ dissect_iggy(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_
         proto_tree_add_item_ret_uint(iggy_tree, hf_iggy_request_command, tvb, offset, 4, ENC_LITTLE_ENDIAN, &command_code);
         offset += 4;
 
-        command_name = get_command_name(command_code);
+        command_name = get_command_name(pinfo, command_code);
         type_item = proto_tree_add_string(iggy_tree, hf_iggy_request_command_name, tvb, 0, 0, command_name);
         proto_item_set_generated(type_item);
 
@@ -412,7 +412,7 @@ dissect_iggy(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_
                     dissect_login_request(tvb, payload_tree, &offset);
                     break;
                 case IGGY_CMD_TOPIC_CREATE:
-                    dissect_topic_create_request(tvb, payload_tree, &offset);
+                    dissect_topic_create_request(tvb, pinfo, payload_tree, &offset);
                     break;
                 default:
                     /* Unknown command */
@@ -439,7 +439,7 @@ dissect_iggy(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_
         proto_tree_add_item_ret_uint(iggy_tree, hf_iggy_response_length, tvb, offset, 4, ENC_LITTLE_ENDIAN, &length);
         offset += 4;
 
-        const char *status_name = val_to_str(status_code, iggy_status_vals, "Unknown (%u)");
+        const char *status_name = val_to_str(pinfo->pool, status_code, iggy_status_vals, "Unknown (%u)");
         type_item = proto_tree_add_string(iggy_tree, hf_iggy_response_status_name, tvb, 0, 0, status_name);
         proto_item_set_generated(type_item);
 
@@ -450,7 +450,7 @@ dissect_iggy(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_
             proto_item_set_generated(type_item);
 
             command_code = req_data->command_code;
-            command_name = get_command_name(command_code);
+            command_name = get_command_name(pinfo, command_code);
         } else {
             command_code = 0;
             command_name = "No matching request";

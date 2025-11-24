@@ -87,16 +87,7 @@ impl TsharkCapture {
     }
 
     fn capture(&mut self) -> io::Result<()> {
-        let dissector_path = std::env::current_dir()?.join("dissector.lua");
-
-        if !dissector_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Dissector not found at: {}", dissector_path.display()),
-            ));
-        }
-
-        let lua_script_arg = format!("lua_script:{}", dissector_path.display());
+        // C dissector is installed in Wireshark plugin directory, no need to load Lua script
         let port_config_arg = format!("iggy.server_port:{}", self.port);
         let filter_arg = format!("tcp and host {} and port {}", self.ip, self.port);
 
@@ -110,8 +101,6 @@ impl TsharkCapture {
                 self.pcap_file.to_str().unwrap(),
                 "-f",
                 &filter_arg,
-                "-X",
-                &lua_script_arg,
                 "-o",
                 &port_config_arg,
             ])
@@ -130,16 +119,7 @@ impl TsharkCapture {
     }
 
     fn analyze(&self) -> io::Result<Vec<Value>> {
-        let dissector_path = std::env::current_dir()?.join("dissector.lua");
-
-        if !dissector_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Dissector not found at: {}", dissector_path.display()),
-            ));
-        }
-
-        let lua_script_arg = format!("lua_script:{}", dissector_path.display());
+        // C dissector is installed in Wireshark plugin directory, no need to load Lua script
         let port_config_arg = format!("iggy.server_port:{}", self.port);
 
         let output = ProcessCommand::new("tshark")
@@ -150,8 +130,6 @@ impl TsharkCapture {
                 "iggy",
                 "-T",
                 "json",
-                "-X",
-                &lua_script_arg,
                 "-o",
                 &port_config_arg,
                 "-V",
@@ -401,20 +379,20 @@ async fn test_login_user_dissection() -> Result<(), Box<dyn std::error::Error>> 
 
     let req_payload = get_request_payload(req).expect("LoginUser request should have payload");
 
-    let username: String = expect_field(req_payload, "iggy.login_user.req.username");
+    let username: String = expect_field(req_payload, "iggy.login.username");
     assert_eq!(username, DEFAULT_ROOT_USERNAME);
 
-    let username_len: u32 = expect_field(req_payload, "iggy.login_user.req.username_len");
+    let username_len: u32 = expect_field(req_payload, "iggy.login.username_len");
     assert_eq!(username_len, DEFAULT_ROOT_USERNAME.len() as u32);
 
-    let password_len: u32 = expect_field(req_payload, "iggy.login_user.req.password_len");
+    let password_len: u32 = expect_field(req_payload, "iggy.login.password_len");
     assert_eq!(password_len, DEFAULT_ROOT_PASSWORD.len() as u32);
 
     verify_response_packet(resp, 0, 4);
 
     let resp_payload = get_response_payload(resp).expect("LoginUser response should have payload");
 
-    let user_id: u32 = expect_field(resp_payload, "iggy.login_user.resp.user_id");
+    let user_id: u32 = expect_field(resp_payload, "iggy.login.user_id");
     assert!(user_id > 0, "User ID should be greater than 0");
 
     Ok(())
@@ -465,24 +443,24 @@ async fn test_create_topic_dissection() -> Result<(), Box<dyn std::error::Error>
 
     let req_payload = get_request_payload(req).expect("CreateTopic request should have payload");
 
-    let req_stream_id_kind: u32 = expect_field(req_payload, "iggy.create_topic.req.stream_id_kind");
+    let req_stream_id_kind: u32 = expect_field(req_payload, "iggy.create_topic.stream_id_kind");
     assert_eq!(req_stream_id_kind, IdKind::String.as_code() as u32);
 
     let req_stream_id_length: u32 =
-        expect_field(req_payload, "iggy.create_topic.req.stream_id_length");
+        expect_field(req_payload, "iggy.create_topic.stream_id_length");
     assert_eq!(req_stream_id_length, stream_name.len() as u32);
 
     let req_stream_id_value: String =
-        expect_field(req_payload, "iggy.create_topic.req.stream_id_value_string");
+        expect_field(req_payload, "iggy.create_topic.stream_id_string");
     assert_eq!(req_stream_id_value, stream_name);
 
-    let name: String = expect_field(req_payload, "iggy.create_topic.req.name");
+    let name: String = expect_field(req_payload, "iggy.create_topic.name");
     assert_eq!(name, topic_name);
 
-    let name_len: u32 = expect_field(req_payload, "iggy.create_topic.req.name_len");
+    let name_len: u32 = expect_field(req_payload, "iggy.create_topic.name_len");
     assert_eq!(name_len, topic_name.len() as u32);
 
-    let partitions: u32 = expect_field(req_payload, "iggy.create_topic.req.partitions_count");
+    let partitions: u32 = expect_field(req_payload, "iggy.create_topic.partitions_count");
     assert_eq!(partitions, partitions_count);
 
     verify_response_packet(resp, 0, 188);
