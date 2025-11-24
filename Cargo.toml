@@ -40,7 +40,7 @@ members = [
     "core/server",
     "core/tools",
     "examples/rust",
-    "wireshark",
+    "wireshark/rust",
 ]
 exclude = ["foreign/python"]
 resolver = "2"
