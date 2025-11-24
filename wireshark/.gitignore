@@ -1,17 +1,6 @@
-# Build artifacts
-build/
+# Build artifacts (if building locally)
 *.o
-*.so
-*.dll
-*.dylib
 *.a
-
-# CMake
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile.generated
-*.cmake
 
 # Editor files
 .vscode/
