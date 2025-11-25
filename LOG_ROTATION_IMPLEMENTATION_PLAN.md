@@ -389,3 +389,194 @@ mod tests {
 3. 요구사항이 명확 → Custom이 더 적합
 4. 코드 복잡도 낮음 → 692줄로 관리 가능
 5. 장기적으로 더 나음 → 완전한 통제
+
+---
+
+## 대안 분석 및 선택 근거
+
+### 검토했던 다른 옵션들
+
+#### Option 1: tracing-appender PR #2497 대기
+- **GitHub**: https://github.com/tokio-rs/tracing/pull/2497
+- **상태**: Open (2023년 3월부터 **2년 넘게 대기 중**)
+- **내용**: Size-based rotation 기능 추가
+
+**장점**:
+- ✅ 공식 tokio/tracing 생태계
+- ✅ 커뮤니티 지원 (6,355 stars)
+- ✅ 장기 유지보수 보장
+
+**치명적 단점**:
+- ❌ **2년 동안 merge 안됨**
+- ❌ Mergeable: False (conflict 있음)
+- ❌ Author 코멘트: "**Not a priority for maintainers**"
+- ❌ 언제 merge될지 **완전히 불명확**
+- ❌ 19개 thumbs up 있지만 진행 없음
+
+**결론**: ⛔ **기다리면 안됨** - Production 디스크 문제 리스크
+
+> 근데 아직까지 로그 자동 제거 없다고 문제가 된 적은 없어보여서, 
+> 그냥 냅두고 이거 머지되거나 할거 없으면 그 떄 들어가도 될 듯? 
+
+---
+
+#### Option 2: tracing-rolling-file (외부 crate)
+- **GitHub**: https://github.com/cavivie/tracing-rolling-file
+- **Stars**: 9 (매우 낮음)
+- **최근 업데이트**: 2025-08-16 (3개월 전)
+- **버전**: 0.1.3
+
+**장점**:
+- ✅ 시간 + 크기 rotation 모두 지원
+- ✅ tracing 생태계 통합
+- ✅ 최근 업데이트됨 (활발한 유지보수)
+- ✅ rolling-file 기반 (검증된 로직)
+- ✅ 즉시 사용 가능 (2-3시간 작업)
+
+**단점**:
+- ❌ **커뮤니티 매우 작음** (9 stars)
+- ❌ **개인 개발자** 유지보수 (장기 지속성 불확실)
+- ⚠️ 파일명 형식: Debian 스타일만 (iggy-server.log.1, .2)
+  - 시간 정보(2025-11-25-14) 없음
+- ⚠️ Rotation hook 없음 (cleanup 트리거 어려움)
+- ❌ Apache 재단 프로젝트에 소규모 의존성 추가 적절한가?
+
+**분석**:
+- 코드가 단순 (692줄)하므로 fork 가능
+- 하지만 요구사항(시간정보 + hook)에 맞추려면 수정 필요
+- 수정하느니 차라리 vendoring이 나음
+
+---
+
+#### Option 3: rolling-file (원본)
+- **GitHub**: https://github.com/Axcient/rolling-file-rs
+- **Stars**: 16
+- **최근 업데이트**: 2023-02-24 (**2년 전, dormant**)
+- **기업**: Axcient (백업 회사)
+
+**장점**:
+- ✅ 기업 지원 (신뢰성)
+- ✅ 더 나은 설계 (OsString, 버퍼 설정)
+- ✅ 안정적 (2년간 변경 없음 = 버그 없음)
+
+**치명적 단점**:
+- ❌ **유지보수 중단** (2023년 이후 0 커밋)
+- ❌ tracing 통합 수동 필요
+- ❌ 향후 문제 발생 시 대응 불가
+
+**결론**: ⛔ **비추천** - 죽은 프로젝트
+
+---
+
+#### Option 4: log4rs / flexi_logger
+- **Stars**: 1,102 / 374 (많음!)
+- **유지보수**: 매우 활발
+
+**치명적 단점**:
+- ❌ **`log` crate 생태계** (Iggy는 `tracing` 사용)
+- ❌ 전체 로깅 시스템 변경 필요
+- ❌ 대규모 리팩토링 필요
+
+**결론**: ⛔ **불가능** - 생태계 불일치
+
+---
+
+### 의존성 비교표
+
+| Crate | Stars | 최근 업데이트 | Time Rot. | Size Rot. | Tracing | 상태 | 추천도 |
+|-------|-------|------------|-----------|-----------|---------|------|--------|
+| **tracing-appender** | 6,355 | 2025-11 | ✅ | ❌ (PR 대기) | ✅ Native | Active | ⏰ 대기 불가 |
+| **tracing-rolling-file** | 9 | 2025-08 | ✅ | ✅ | ✅ | Active | ⚠️ 수정 필요 |
+| **rolling-file** | 16 | 2023-02 | ✅ | ✅ | ⚠️ Manual | Dormant | ❌ 중단됨 |
+| **log4rs** | 1,102 | 2025-11 | ✅ | ✅ | ❌ log | Active | ❌ 생태계 |
+| **flexi_logger** | 374 | 2025-11 | ✅ | ✅ | ❌ log | Active | ❌ 생태계 |
+| **Custom (Vendoring)** | - | - | ✅ | ✅ | ✅ | - | ✅ **최적** |
+
+---
+
+### 왜 Vendoring을 선택했는가?
+
+#### 1. **PR #2497 대기는 위험**
+```
+Timeline:
+2023-03: PR 생성
+2024년: 진행 없음
+2025-03: 마지막 활동
+현재: Merge 기미 없음
+
+"Not a priority for maintainers" ← 명확한 신호
+```
+→ 언제까지 기다릴 수 없음
+
+#### 2. **tracing-rolling-file은 불완전**
+```rust
+// 필요한 것:
+iggy-server.log.2025-11-25-14      // ✅ 시간 정보
+iggy-server.log.2025-11-25-14.1    // ✅ 크기 rotation
++ rotation hook                     // ✅ cleanup 트리거
+
+// tracing-rolling-file 제공:
+iggy-server.log.1                   // ❌ 시간 정보 없음
+iggy-server.log.2                   // ✅ 크기 rotation
+(no hook)                           // ❌ hook 없음
+```
+→ 어차피 수정해야 함 → 그럼 vendoring이 낫다
+
+#### 3. **Apache 프로젝트 철학**
+- 의존성 최소화
+- 코드 통제
+- 장기 안정성
+
+→ 692줄 정도는 프로젝트에 포함해도 부담 없음
+
+#### 4. **Iggy의 기존 패턴과 일치**
+```rust
+// Iggy는 이미 비슷한 패턴 사용:
+- Segment rotation (크기 기반)
+- Offset-based 파일명
+- Periodic cleanup task
+- IggyTimestamp utilities
+
+→ 같은 패턴으로 구현하면 일관성 UP
+```
+
+---
+
+### 최종 결정 근거
+
+**Custom Implementation (Vendoring)을 선택한 이유:**
+
+1. **즉시 해결** 가능 (6-7시간)
+   - vs PR 대기 (언제까지?)
+   - vs 외부 crate 수정 (비슷한 시간)
+
+2. **요구사항 완벽 충족**
+   - ✅ 시간 정보 포함 파일명
+   - ✅ 크기 + 시간 rotation
+   - ✅ Rotation hook
+   - ✅ Retention cleanup
+
+3. **장기 안정성**
+   - ✅ Iggy 팀이 직접 관리
+   - ✅ 버그 수정 즉시 가능
+   - ✅ 성능 최적화 자유롭게
+
+4. **Apache 프로젝트 적합**
+   - ✅ 라이선스 호환 (MIT/Apache-2.0)
+   - ✅ 의존성 최소화
+   - ✅ 코드 복잡도 낮음 (692줄)
+
+5. **리스크 낮음**
+   - ✅ rolling-file 기반 (검증됨)
+   - ✅ 코드가 단순함
+   - ✅ 철저한 테스트 가능
+
+---
+
+## 참고 링크
+
+- **tracing-appender PR #2497**: https://github.com/tokio-rs/tracing/pull/2497
+- **tracing-rolling-file**: https://github.com/cavivie/tracing-rolling-file
+- **rolling-file**: https://github.com/Axcient/rolling-file-rs
+- **Iggy Segment 관리**: `core/server/src/streaming/segments/segment.rs`
+- **Iggy Message Cleaner**: `core/server/src/shard/tasks/periodic/message_cleaner.rs` 
