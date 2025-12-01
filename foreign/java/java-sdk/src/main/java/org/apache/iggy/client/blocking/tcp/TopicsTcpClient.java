@@ -50,8 +50,8 @@ class TopicsTcpClient implements TopicsClient {
     public Optional<TopicDetails> getTopic(StreamId streamId, TopicId topicId) {
         var payload = toBytes(streamId);
         payload.writeBytes(toBytes(topicId));
-        var response = tcpClient.send(CommandCode.Topic.GET, payload);
-        if (response.isReadable()) {
+        var response = tcpClient.sendBytes(CommandCode.Topic.GET, payload);
+        if (response.length > 0) {
             return Optional.of(readTopicDetails(response));
         }
         return Optional.empty();
@@ -60,10 +60,11 @@ class TopicsTcpClient implements TopicsClient {
     @Override
     public List<Topic> getTopics(StreamId streamId) {
         var payload = toBytes(streamId);
-        var response = tcpClient.send(CommandCode.Topic.GET_ALL, payload);
+        var response = tcpClient.sendBytes(CommandCode.Topic.GET_ALL, payload);
+        var buffer = Unpooled.wrappedBuffer(response);
         List<Topic> topics = new ArrayList<>();
-        while (response.isReadable()) {
-            topics.add(readTopic(response));
+        while (buffer.isReadable()) {
+            topics.add(readTopic(buffer));
         }
         return topics;
     }
@@ -88,7 +89,7 @@ class TopicsTcpClient implements TopicsClient {
         payload.writeByte(replicationFactor.orElse((short) 0));
         payload.writeBytes(nameToBytes(name));
 
-        var response = tcpClient.send(CommandCode.Topic.CREATE, payload);
+        var response = tcpClient.sendBytes(CommandCode.Topic.CREATE, payload);
         return readTopicDetails(response);
     }
 
@@ -110,13 +111,13 @@ class TopicsTcpClient implements TopicsClient {
         payload.writeByte(replicationFactor.orElse((short) 0));
         payload.writeBytes(nameToBytes(name));
 
-        tcpClient.send(CommandCode.Topic.UPDATE, payload);
+        tcpClient.sendBytes(CommandCode.Topic.UPDATE, payload);
     }
 
     @Override
     public void deleteTopic(StreamId streamId, TopicId topicId) {
         var payload = toBytes(streamId);
         payload.writeBytes(toBytes(topicId));
-        tcpClient.send(CommandCode.Topic.DELETE, payload);
+        tcpClient.sendBytes(CommandCode.Topic.DELETE, payload);
     }
 }

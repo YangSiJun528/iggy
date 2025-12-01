@@ -19,7 +19,6 @@
 
 package org.apache.iggy.client.blocking.tcp;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.apache.iggy.client.blocking.ConsumerGroupsClient;
 import org.apache.iggy.consumergroup.ConsumerGroup;
@@ -50,8 +49,8 @@ class ConsumerGroupsTcpClient implements ConsumerGroupsClient {
         var payload = toBytes(streamId);
         payload.writeBytes(toBytes(topicId));
         payload.writeBytes(toBytes(groupId));
-        var response = tcpClient.send(CommandCode.ConsumerGroup.GET, payload);
-        if (response.isReadable()) {
+        var response = tcpClient.sendBytes(CommandCode.ConsumerGroup.GET, payload);
+        if (response.length > 0) {
             return Optional.of(readConsumerGroupDetails(response));
         }
         return Optional.empty();
@@ -61,10 +60,11 @@ class ConsumerGroupsTcpClient implements ConsumerGroupsClient {
     public List<ConsumerGroup> getConsumerGroups(StreamId streamId, TopicId topicId) {
         var payload = toBytes(streamId);
         payload.writeBytes(toBytes(topicId));
-        var response = tcpClient.send(CommandCode.ConsumerGroup.GET_ALL, payload);
+        var response = tcpClient.sendBytes(CommandCode.ConsumerGroup.GET_ALL, payload);
+        var buffer = Unpooled.wrappedBuffer(response);
         List<ConsumerGroup> groups = new ArrayList<>();
-        while (response.isReadable()) {
-            groups.add(readConsumerGroup(response));
+        while (buffer.isReadable()) {
+            groups.add(readConsumerGroup(buffer));
         }
         return groups;
     }
@@ -79,7 +79,7 @@ class ConsumerGroupsTcpClient implements ConsumerGroupsClient {
         payload.writeBytes(topicIdBytes);
         payload.writeBytes(nameToBytes(name));
 
-        ByteBuf response = tcpClient.send(CommandCode.ConsumerGroup.CREATE, payload);
+        var response = tcpClient.sendBytes(CommandCode.ConsumerGroup.CREATE, payload);
         return readConsumerGroupDetails(response);
     }
 
@@ -88,7 +88,7 @@ class ConsumerGroupsTcpClient implements ConsumerGroupsClient {
         var payload = toBytes(streamId);
         payload.writeBytes(toBytes(topicId));
         payload.writeBytes(toBytes(groupId));
-        tcpClient.send(CommandCode.ConsumerGroup.DELETE, payload);
+        tcpClient.sendBytes(CommandCode.ConsumerGroup.DELETE, payload);
     }
 
     @Override
@@ -97,7 +97,7 @@ class ConsumerGroupsTcpClient implements ConsumerGroupsClient {
         payload.writeBytes(toBytes(topicId));
         payload.writeBytes(toBytes(groupId));
 
-        tcpClient.send(CommandCode.ConsumerGroup.JOIN, payload);
+        tcpClient.sendBytes(CommandCode.ConsumerGroup.JOIN, payload);
     }
 
     @Override
@@ -106,6 +106,6 @@ class ConsumerGroupsTcpClient implements ConsumerGroupsClient {
         payload.writeBytes(toBytes(topicId));
         payload.writeBytes(toBytes(groupId));
 
-        tcpClient.send(CommandCode.ConsumerGroup.LEAVE, payload);
+        tcpClient.sendBytes(CommandCode.ConsumerGroup.LEAVE, payload);
     }
 }

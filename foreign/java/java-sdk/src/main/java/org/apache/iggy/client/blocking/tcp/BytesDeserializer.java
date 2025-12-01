@@ -20,6 +20,7 @@
 package org.apache.iggy.client.blocking.tcp;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.iggy.consumergroup.ConsumerGroup;
 import org.apache.iggy.consumergroup.ConsumerGroupDetails;
@@ -60,6 +61,68 @@ import java.util.Optional;
 final class BytesDeserializer {
 
     private BytesDeserializer() {}
+
+    // Byte array overloads for public methods
+
+    static StreamBase readStreamBase(byte[] data) {
+        return readStreamBase(Unpooled.wrappedBuffer(data));
+    }
+
+    static StreamDetails readStreamDetails(byte[] data) {
+        return readStreamDetails(Unpooled.wrappedBuffer(data));
+    }
+
+    public static TopicDetails readTopicDetails(byte[] data) {
+        return readTopicDetails(Unpooled.wrappedBuffer(data));
+    }
+
+    public static Topic readTopic(byte[] data) {
+        return readTopic(Unpooled.wrappedBuffer(data));
+    }
+
+    public static ConsumerGroupDetails readConsumerGroupDetails(byte[] data) {
+        return readConsumerGroupDetails(Unpooled.wrappedBuffer(data));
+    }
+
+    public static ConsumerGroup readConsumerGroup(byte[] data) {
+        return readConsumerGroup(Unpooled.wrappedBuffer(data));
+    }
+
+    public static ConsumerOffsetInfo readConsumerOffsetInfo(byte[] data) {
+        return readConsumerOffsetInfo(Unpooled.wrappedBuffer(data));
+    }
+
+    public static PolledMessages readPolledMessages(byte[] data) {
+        return readPolledMessages(Unpooled.wrappedBuffer(data));
+    }
+
+    static Stats readStats(byte[] data) {
+        return readStats(Unpooled.wrappedBuffer(data));
+    }
+
+    static ClientInfoDetails readClientInfoDetails(byte[] data) {
+        return readClientInfoDetails(Unpooled.wrappedBuffer(data));
+    }
+
+    static ClientInfo readClientInfo(byte[] data) {
+        return readClientInfo(Unpooled.wrappedBuffer(data));
+    }
+
+    static UserInfoDetails readUserInfoDetails(byte[] data) {
+        return readUserInfoDetails(Unpooled.wrappedBuffer(data));
+    }
+
+    static UserInfo readUserInfo(byte[] data) {
+        return readUserInfo(Unpooled.wrappedBuffer(data));
+    }
+
+    static PersonalAccessTokenInfo readPersonalAccessTokenInfo(byte[] data) {
+        return readPersonalAccessTokenInfo(Unpooled.wrappedBuffer(data));
+    }
+
+    static RawPersonalAccessToken readRawPersonalAccessToken(byte[] data) {
+        return readRawPersonalAccessToken(Unpooled.wrappedBuffer(data));
+    }
 
     static StreamBase readStreamBase(ByteBuf response) {
         var streamId = response.readUnsignedIntLE();

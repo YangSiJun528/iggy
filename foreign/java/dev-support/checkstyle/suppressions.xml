@@ -32,4 +32,7 @@
     <suppress checks="VisibilityModifier" files=".*[\\/]benchmarks[\\/].*"/>
     <suppress checks="IllegalThrows" files=".*[\\/]benchmarks[\\/].*"/>
     <suppress checks="IllegalCatch" files=".*[\\/]benchmarks[\\/].*"/>
+
+    <!-- BytesDeserializer has byte[] overloads grouped at top for clarity -->
+    <suppress checks="OverloadMethodsDeclarationOrder" files=".*BytesDeserializer\.java"/>
 </suppressions>

@@ -59,9 +59,9 @@ class MessagesTcpClient implements MessagesClient {
         payload.writeIntLE(count.intValue());
         payload.writeByte(autoCommit ? 1 : 0);
 
-        var response = tcpClient.send(CommandCode.Messages.POLL, payload);
-
-        return BytesDeserializer.readPolledMessages(response);
+        var response = tcpClient.sendBytes(CommandCode.Messages.POLL, payload);
+        var buffer = Unpooled.wrappedBuffer(response);
+        return BytesDeserializer.readPolledMessages(buffer);
     }
 
     @Override
@@ -101,6 +101,6 @@ class MessagesTcpClient implements MessagesClient {
             payload.writeBytes(toBytes(message));
         }
 
-        tcpClient.send(CommandCode.Messages.SEND, payload);
+        tcpClient.sendBytes(CommandCode.Messages.SEND, payload);
     }
 }

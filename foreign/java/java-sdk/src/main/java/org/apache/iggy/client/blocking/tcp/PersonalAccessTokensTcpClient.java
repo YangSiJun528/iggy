@@ -48,16 +48,17 @@ class PersonalAccessTokensTcpClient implements PersonalAccessTokensClient {
         var payload = Unpooled.buffer();
         payload.writeBytes(nameToBytes(name));
         payload.writeBytes(toBytesAsU64(expiry));
-        var response = tcpClient.send(CommandCode.PersonalAccessToken.CREATE, payload);
+        var response = tcpClient.sendBytes(CommandCode.PersonalAccessToken.CREATE, payload);
         return readRawPersonalAccessToken(response);
     }
 
     @Override
     public List<PersonalAccessTokenInfo> getPersonalAccessTokens() {
-        var response = tcpClient.send(CommandCode.PersonalAccessToken.GET_ALL);
+        var response = tcpClient.sendBytes(CommandCode.PersonalAccessToken.GET_ALL);
+        var buffer = Unpooled.wrappedBuffer(response);
         var tokens = new ArrayList<PersonalAccessTokenInfo>();
-        while (response.isReadable()) {
-            tokens.add(readPersonalAccessTokenInfo(response));
+        while (buffer.isReadable()) {
+            tokens.add(readPersonalAccessTokenInfo(buffer));
         }
         return tokens;
     }
@@ -65,14 +66,15 @@ class PersonalAccessTokensTcpClient implements PersonalAccessTokensClient {
     @Override
     public void deletePersonalAccessToken(String name) {
         var payload = nameToBytes(name);
-        tcpClient.send(CommandCode.PersonalAccessToken.DELETE, payload);
+        tcpClient.sendBytes(CommandCode.PersonalAccessToken.DELETE, payload);
     }
 
     @Override
     public IdentityInfo loginWithPersonalAccessToken(String token) {
         var payload = nameToBytes(token);
-        var response = tcpClient.send(CommandCode.PersonalAccessToken.LOGIN, payload);
-        var userId = response.readUnsignedIntLE();
+        var response = tcpClient.sendBytes(CommandCode.PersonalAccessToken.LOGIN, payload);
+        var buffer = Unpooled.wrappedBuffer(response);
+        var userId = buffer.readUnsignedIntLE();
         return new IdentityInfo(userId, Optional.empty());
     }
 }

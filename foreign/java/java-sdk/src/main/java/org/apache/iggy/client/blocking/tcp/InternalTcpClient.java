@@ -75,24 +75,73 @@ final class InternalTcpClient {
         this.connection.inbound().receiveObject().ofType(IggyResponse.class).subscribe(responses::add);
     }
 
+    /**
+     * Sends a command and returns the response as a byte array.
+     * This method automatically manages ByteBuf lifecycle.
+     *
+     * @param code the command code
+     * @return response data as byte array
+     */
+    byte[] sendBytes(CommandCode code) {
+        ByteBuf response = send(code.getValue());
+        try {
+            byte[] result = new byte[response.readableBytes()];
+            response.readBytes(result);
+            return result;
+        } finally {
+            response.release();
+        }
+    }
+
+    /**
+     * Sends a command with payload and returns the response as a byte array.
+     * This method automatically manages ByteBuf lifecycle.
+     *
+     * @param code the command code
+     * @param payload the payload buffer
+     * @return response data as byte array
+     */
+    byte[] sendBytes(CommandCode code, ByteBuf payload) {
+        ByteBuf response = send(code.getValue(), payload);
+        try {
+            byte[] result = new byte[response.readableBytes()];
+            response.readBytes(result);
+            return result;
+        } finally {
+            response.release();
+        }
+    }
+
+    /**
+     * @deprecated Use {@link #sendBytes(CommandCode)} instead.
+     * Caller is responsible for calling release() on returned ByteBuf.
+     */
+    @Deprecated
     ByteBuf send(CommandCode code) {
         return send(code.getValue());
     }
 
     /**
-     * Use {@link #send(CommandCode)} instead.
+     * @deprecated Use {@link #sendBytes(CommandCode)} instead.
+     * Caller is responsible for calling release() on returned ByteBuf.
      */
     @Deprecated
     ByteBuf send(int command) {
         return send(command, Unpooled.EMPTY_BUFFER);
     }
 
+    /**
+     * @deprecated Use {@link #sendBytes(CommandCode, ByteBuf)} instead.
+     * Caller is responsible for calling release() on returned ByteBuf.
+     */
+    @Deprecated
     ByteBuf send(CommandCode code, ByteBuf payload) {
         return send(code.getValue(), payload);
     }
 
     /**
-     * Use {@link #send(CommandCode, ByteBuf)} instead.
+     * @deprecated Use {@link #sendBytes(CommandCode, ByteBuf)} instead.
+     * Caller is responsible for calling release() on returned ByteBuf.
      */
     @Deprecated
     ByteBuf send(int command, ByteBuf payload) {

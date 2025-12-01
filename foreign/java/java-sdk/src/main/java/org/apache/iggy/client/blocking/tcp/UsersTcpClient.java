@@ -47,8 +47,8 @@ class UsersTcpClient implements UsersClient {
     @Override
     public Optional<UserInfoDetails> getUser(UserId userId) {
         var payload = toBytes(userId);
-        var response = tcpClient.send(CommandCode.User.GET, payload);
-        if (response.isReadable()) {
+        var response = tcpClient.sendBytes(CommandCode.User.GET, payload);
+        if (response.length > 0) {
             return Optional.of(readUserInfoDetails(response));
         }
         return Optional.empty();
@@ -56,10 +56,11 @@ class UsersTcpClient implements UsersClient {
 
     @Override
     public List<UserInfo> getUsers() {
-        var response = tcpClient.send(CommandCode.User.GET_ALL);
+        var response = tcpClient.sendBytes(CommandCode.User.GET_ALL);
+        var buffer = Unpooled.wrappedBuffer(response);
         List<UserInfo> users = new ArrayList<>();
-        while (response.isReadable()) {
-            users.add(BytesDeserializer.readUserInfo(response));
+        while (buffer.isReadable()) {
+            users.add(BytesDeserializer.readUserInfo(buffer));
         }
         return users;
     }
@@ -80,14 +81,14 @@ class UsersTcpClient implements UsersClient {
                 },
                 () -> payload.writeByte(0));
 
-        var response = tcpClient.send(CommandCode.User.CREATE, payload);
+        var response = tcpClient.sendBytes(CommandCode.User.CREATE, payload);
         return readUserInfoDetails(response);
     }
 
     @Override
     public void deleteUser(UserId userId) {
         var payload = toBytes(userId);
-        tcpClient.send(CommandCode.User.DELETE, payload);
+        tcpClient.sendBytes(CommandCode.User.DELETE, payload);
     }
 
     @Override
@@ -106,7 +107,7 @@ class UsersTcpClient implements UsersClient {
                 },
                 () -> payload.writeByte(0));
 
-        tcpClient.send(CommandCode.User.UPDATE, payload);
+        tcpClient.sendBytes(CommandCode.User.UPDATE, payload);
     }
 
     @Override
@@ -122,7 +123,7 @@ class UsersTcpClient implements UsersClient {
                 },
                 () -> payload.writeByte(0));
 
-        tcpClient.send(CommandCode.User.UPDATE_PERMISSIONS, payload);
+        tcpClient.sendBytes(CommandCode.User.UPDATE_PERMISSIONS, payload);
     }
 
     @Override
@@ -131,7 +132,7 @@ class UsersTcpClient implements UsersClient {
         payload.writeBytes(nameToBytes(currentPassword));
         payload.writeBytes(nameToBytes(newPassword));
 
-        tcpClient.send(CommandCode.User.CHANGE_PASSWORD, payload);
+        tcpClient.sendBytes(CommandCode.User.CHANGE_PASSWORD, payload);
     }
 
     @Override
@@ -148,14 +149,14 @@ class UsersTcpClient implements UsersClient {
         payload.writeIntLE(context.length());
         payload.writeBytes(context.getBytes());
 
-        var response = tcpClient.send(CommandCode.User.LOGIN, payload);
-
-        var userId = response.readUnsignedIntLE();
+        var response = tcpClient.sendBytes(CommandCode.User.LOGIN, payload);
+        var buffer = Unpooled.wrappedBuffer(response);
+        var userId = buffer.readUnsignedIntLE();
         return new IdentityInfo(userId, Optional.empty());
     }
 
     @Override
     public void logout() {
-        tcpClient.send(CommandCode.User.LOGOUT);
+        tcpClient.sendBytes(CommandCode.User.LOGOUT);
     }
 }

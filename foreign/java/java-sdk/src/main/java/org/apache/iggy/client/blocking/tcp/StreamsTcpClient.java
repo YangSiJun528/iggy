@@ -49,15 +49,15 @@ class StreamsTcpClient implements StreamsClient {
         var payload = Unpooled.buffer(payloadSize);
 
         payload.writeBytes(nameToBytes(name));
-        var response = tcpClient.send(CommandCode.Stream.CREATE, payload);
+        var response = tcpClient.sendBytes(CommandCode.Stream.CREATE, payload);
         return readStreamDetails(response);
     }
 
     @Override
     public Optional<StreamDetails> getStream(StreamId streamId) {
         var payload = toBytes(streamId);
-        var response = tcpClient.send(CommandCode.Stream.GET, payload);
-        if (response.isReadable()) {
+        var response = tcpClient.sendBytes(CommandCode.Stream.GET, payload);
+        if (response.length > 0) {
             return Optional.of(readStreamDetails(response));
         }
         return Optional.empty();
@@ -65,10 +65,11 @@ class StreamsTcpClient implements StreamsClient {
 
     @Override
     public List<StreamBase> getStreams() {
-        ByteBuf response = tcpClient.send(CommandCode.Stream.GET_ALL);
+        byte[] response = tcpClient.sendBytes(CommandCode.Stream.GET_ALL);
+        ByteBuf buffer = Unpooled.wrappedBuffer(response);
         List<StreamBase> streams = new ArrayList<>();
-        while (response.isReadable()) {
-            streams.add(readStreamBase(response));
+        while (buffer.isReadable()) {
+            streams.add(readStreamBase(buffer));
         }
         return streams;
     }
@@ -81,12 +82,12 @@ class StreamsTcpClient implements StreamsClient {
 
         payload.writeBytes(idBytes);
         payload.writeBytes(nameToBytes(name));
-        tcpClient.send(CommandCode.Stream.UPDATE, payload);
+        tcpClient.sendBytes(CommandCode.Stream.UPDATE, payload);
     }
 
     @Override
     public void deleteStream(StreamId streamId) {
         var payload = toBytes(streamId);
-        tcpClient.send(CommandCode.Stream.DELETE, payload);
+        tcpClient.sendBytes(CommandCode.Stream.DELETE, payload);
     }
 }

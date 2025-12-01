@@ -49,7 +49,7 @@ class ConsumerOffsetTcpClient implements ConsumerOffsetsClient {
         payload.writeBytes(toBytes(partitionId));
         payload.writeBytes(toBytesAsU64(offset));
 
-        tcpClient.send(CommandCode.ConsumerOffset.STORE, payload);
+        tcpClient.sendBytes(CommandCode.ConsumerOffset.STORE, payload);
     }
 
     @Override
@@ -60,8 +60,8 @@ class ConsumerOffsetTcpClient implements ConsumerOffsetsClient {
         payload.writeBytes(toBytes(topicId));
         payload.writeBytes(toBytes(partitionId));
 
-        var response = tcpClient.send(CommandCode.ConsumerOffset.GET, payload);
-        if (response.isReadable()) {
+        var response = tcpClient.sendBytes(CommandCode.ConsumerOffset.GET, payload);
+        if (response.length > 0) {
             return Optional.of(readConsumerOffsetInfo(response));
         }
         return Optional.empty();

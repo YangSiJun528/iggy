@@ -38,7 +38,7 @@ class PartitionsTcpClient implements PartitionsClient {
         var payload = toBytes(streamId);
         payload.writeBytes(toBytes(topicId));
         payload.writeIntLE(partitionsCount.intValue());
-        tcpClient.send(CommandCode.Partition.CREATE, payload);
+        tcpClient.sendBytes(CommandCode.Partition.CREATE, payload);
     }
 
     @Override
@@ -46,6 +46,6 @@ class PartitionsTcpClient implements PartitionsClient {
         var payload = toBytes(streamId);
         payload.writeBytes(toBytes(topicId));
         payload.writeIntLE(partitionsCount.intValue());
-        tcpClient.send(CommandCode.Partition.DELETE, payload);
+        tcpClient.sendBytes(CommandCode.Partition.DELETE, payload);
     }
 }

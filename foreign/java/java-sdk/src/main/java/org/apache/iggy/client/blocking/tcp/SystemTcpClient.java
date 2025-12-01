@@ -42,13 +42,13 @@ class SystemTcpClient implements SystemClient {
 
     @Override
     public Stats getStats() {
-        var response = tcpClient.send(CommandCode.System.GET_STATS);
+        var response = tcpClient.sendBytes(CommandCode.System.GET_STATS);
         return readStats(response);
     }
 
     @Override
     public ClientInfoDetails getMe() {
-        var response = tcpClient.send(CommandCode.System.GET_ME);
+        var response = tcpClient.sendBytes(CommandCode.System.GET_ME);
         return readClientInfoDetails(response);
     }
 
@@ -56,23 +56,24 @@ class SystemTcpClient implements SystemClient {
     public ClientInfoDetails getClient(Long clientId) {
         var payload = Unpooled.buffer(4);
         payload.writeIntLE(clientId.intValue());
-        var response = tcpClient.send(CommandCode.System.GET_CLIENT, payload);
+        var response = tcpClient.sendBytes(CommandCode.System.GET_CLIENT, payload);
         return readClientInfoDetails(response);
     }
 
     @Override
     public List<ClientInfo> getClients() {
-        var response = tcpClient.send(CommandCode.System.GET_ALL_CLIENTS);
+        var response = tcpClient.sendBytes(CommandCode.System.GET_ALL_CLIENTS);
+        var buffer = Unpooled.wrappedBuffer(response);
         List<ClientInfo> clients = new ArrayList<>();
-        while (response.isReadable()) {
-            clients.add(readClientInfo(response));
+        while (buffer.isReadable()) {
+            clients.add(readClientInfo(buffer));
         }
         return clients;
     }
 
     @Override
     public String ping() {
-        tcpClient.send(CommandCode.System.PING);
+        tcpClient.sendBytes(CommandCode.System.PING);
         return "";
     }
 }
