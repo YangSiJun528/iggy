@@ -63,6 +63,7 @@ public abstract class IntegrationTest {
                     .withEnv("IGGY_ROOT_PASSWORD", "iggy")
                     .withEnv("IGGY_TCP_ADDRESS", "0.0.0.0:8090")
                     .withEnv("IGGY_HTTP_ADDRESS", "0.0.0.0:3000")
+                    .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withSecurityOpts(List.of("seccomp=unconfined")))
                     .withLogConsumer(frame -> System.out.print(frame.getUtf8String()));
             iggyServer.start();
         } else {
