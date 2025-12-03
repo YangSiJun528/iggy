@@ -68,12 +68,14 @@ tasks.register<JavaExec>("jmh") {
 
 tasks.register<JavaExec>("jmhReport") {
     group = "benchmark"
-    description = "Analyze JMH benchmark results and generate report. Use -PjmhResultFile to specify JSON file path."
+    description = "Analyze JMH benchmark results and generate report. Use -PjmhResultFile to specify JSON file path and -PjmhOutputFile for output path."
 
     dependsOn(tasks.shadowJar)
 
     val resultFilePath = project.findProperty("jmhResultFile")?.toString()
         ?: "build/reports/jmh/results.json"
+    val outputFilePath = project.findProperty("jmhOutputFile")?.toString()
+        ?: "build/reports/jmh/analysis.txt"
     val resultsFile = file(resultFilePath)
 
     // Only run if results file exists
@@ -91,5 +93,5 @@ tasks.register<JavaExec>("jmhReport") {
 
     classpath = files(jarFile)
     mainClass.set("org.apache.iggy.benchmark.util.JmhResultAnalyzer")
-    args = listOf(resultsFile.absolutePath)
+    args = listOf(resultsFile.absolutePath, outputFilePath)
 }

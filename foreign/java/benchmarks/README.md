@@ -26,9 +26,13 @@ Server-side performance testing is done separately by the Iggy server project.
   - Parameters: `messagesPerBatch` (10, 100, 1000), `payloadSizeBytes` (100B, 1KB)
 
 ### Poll Benchmarks
-- **Poll messages**: `BlockingTcp/AsyncTcp/BlockingHttp PollBenchmark`
+- **Poll messages**: `BlockingTcp/BlockingHttp PollBenchmark`
   - Methods: `pollNext`, `pollOffset`
   - Parameters: `messagesPerPoll` (1, 10, 100, 1000)
+- **Async poll with concurrent requests**: `AsyncTcpPollBenchmark`
+  - Methods: `pollNext`, `pollOffset`
+  - Parameters: `messagesPerPoll` (1, 10, 100, 1000), `concurrentRequests` (1, 16)
+  - When `concurrentRequests=1`, behaves as single request; when >1, executes multiple concurrent requests
 
 ## Usage
 
@@ -61,18 +65,20 @@ To generate a detailed analysis report, run benchmarks with JSON output, then an
 ./gradlew :iggy-benchmarks:jmh -PjmhArgs='.*TcpPoll.* -rf json -rff build/reports/jmh/results.json'
 
 # Step 2: Analyze the results (after benchmarks complete)
+# Output will be saved to build/reports/jmh/analysis.txt
 ./gradlew :iggy-benchmarks:jmhReport
 
-# Or specify custom JSON file location
-./gradlew :iggy-benchmarks:jmhReport -PjmhResultFile='path/to/custom-results.json'
+# Or specify custom JSON file location and output file
+./gradlew :iggy-benchmarks:jmhReport -PjmhResultFile='path/to/custom-results.json' -PjmhOutputFile='path/to/output.txt'
 ```
 
-**Note**: `jmhReport` runs independently and can analyze any JMH JSON results file.
+**Note**: `jmhReport` runs independently and can analyze any JMH JSON results file. The output file contains full benchmark names without truncation.
 
 The report calculates `messages/sec = ops/sec × multiplier` where:
 - **Single message send**: multiplier = 1
 - **Batch send**: multiplier = `messagesPerBatch`
 - **Poll**: multiplier = `messagesPerPoll`
+- **Concurrent poll**: multiplier = `messagesPerPoll × concurrentRequests`
 
 Example output:
 ```
@@ -86,7 +92,7 @@ Benchmark                                          Parameters           Ops/sec 
 ========================================================================================================================
 
 Note: Ops/sec × Multiplier = Messages/sec
-      Multiplier is determined by messagesPerBatch or messagesPerPoll parameter
+      Multiplier = messagesPerBatch/Poll × concurrentRequests (if applicable)
 ```
 
 ## Troubleshooting

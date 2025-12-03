@@ -25,11 +25,12 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Analyzes JMH benchmark results and calculates actual message throughput.
@@ -37,18 +38,26 @@ import java.util.Map;
  * <p>This tool parses JMH JSON output and calculates messages/sec by multiplying
  * operations/sec by the number of messages per operation (from benchmark parameters).
  */
-public class JmhResultAnalyzer {
+public final class JmhResultAnalyzer {
 
     private static final String SEPARATOR = "=".repeat(120);
     private static final String LINE = "-".repeat(120);
+    private static final String SEPARATOR_FILE = "=".repeat(165);
+    private static final String LINE_FILE = "-".repeat(165);
+
+    private JmhResultAnalyzer() {
+        // Utility class
+    }
 
     public static void main(String[] args) {
         if (args.length < 1) {
-            System.err.println("Usage: JmhResultAnalyzer <jmh-results.json>");
+            System.err.println("Usage: JmhResultAnalyzer <jmh-results.json> [output-file.txt]");
             System.exit(1);
         }
 
         String jsonFile = args[0];
+        String outputFile = args.length > 1 ? args[1] : null;
+
         List<BenchmarkResult> results = parseResults(jsonFile);
 
         if (results.isEmpty()) {
@@ -59,7 +68,11 @@ public class JmhResultAnalyzer {
         // Sort by benchmark name
         results.sort(Comparator.comparing(r -> r.name));
 
-        printResultsTable(results);
+        if (outputFile != null) {
+            printResultsToFile(results, outputFile);
+        } else {
+            printResultsTable(results);
+        }
     }
 
     private static List<BenchmarkResult> parseResults(String jsonFile) {
@@ -98,6 +111,7 @@ public class JmhResultAnalyzer {
         // Check for batch/poll parameters
         Integer messagesPerBatch = getIntParam(params, "messagesPerBatch");
         Integer messagesPerPoll = getIntParam(params, "messagesPerPoll");
+        Integer concurrentRequests = getIntParam(params, "concurrentRequests");
         Integer payloadSize = getIntParam(params, "payloadSizeBytes");
 
         if (messagesPerBatch != null) {
@@ -108,6 +122,15 @@ public class JmhResultAnalyzer {
             paramInfo.append("poll=").append(messagesPerPoll);
         } else {
             paramInfo.append("single");
+        }
+
+        // Apply concurrent requests multiplier
+        if (concurrentRequests != null && concurrentRequests > 1) {
+            multiplier *= concurrentRequests;
+            if (paramInfo.length() > 0) {
+                paramInfo.append(", ");
+            }
+            paramInfo.append("concurrent=").append(concurrentRequests);
         }
 
         if (payloadSize != null) {
@@ -122,13 +145,7 @@ public class JmhResultAnalyzer {
         double messagesError = error * multiplier;
 
         return new BenchmarkResult(
-                benchmarkName,
-                paramInfo.toString(),
-                opsPerSec,
-                error,
-                messagesPerSec,
-                messagesError,
-                multiplier);
+                benchmarkName, paramInfo.toString(), opsPerSec, error, messagesPerSec, messagesError, multiplier);
     }
 
     private static Integer getIntParam(JsonObject params, String key) {
@@ -152,13 +169,53 @@ public class JmhResultAnalyzer {
         }
     }
 
+    private static void printResultsToFile(List<BenchmarkResult> results, String outputFile) {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(outputFile))) {
+            writer.println();
+            writer.println(SEPARATOR_FILE);
+            writer.println("JMH Benchmark Results - Message Throughput Analysis");
+            writer.println(SEPARATOR_FILE);
+            writer.printf(
+                    "%-80s %-30s %-20s %-20s %-15s%n",
+                    "Benchmark", "Parameters", "Ops/sec", "Messages/sec", "Multiplier");
+            writer.println(LINE_FILE);
+
+            for (BenchmarkResult result : results) {
+                String ops = formatNumber(result.opsPerSec) + "/s";
+                if (result.opsError > 0) {
+                    ops += " ±" + formatNumber(result.opsError);
+                }
+
+                String msgs = formatNumber(result.messagesPerSec) + "/s";
+                if (result.messagesError > 0) {
+                    msgs += " ±" + formatNumber(result.messagesError);
+                }
+
+                String multiplier = "×" + result.multiplier;
+
+                writer.printf("%-80s %-30s %-20s %-20s %-15s%n", result.name, result.params, ops, msgs, multiplier);
+            }
+
+            writer.println(SEPARATOR_FILE);
+            writer.println();
+            writer.println("Note: Ops/sec × Multiplier = Messages/sec");
+            writer.println("      Multiplier = messagesPerBatch/Poll × concurrentRequests (if applicable)");
+            writer.println();
+
+            System.out.println("Analysis report written to: " + outputFile);
+        } catch (IOException e) {
+            System.err.println("Error writing to file: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+
     private static void printResultsTable(List<BenchmarkResult> results) {
         System.out.println();
         System.out.println(SEPARATOR);
         System.out.println("JMH Benchmark Results - Message Throughput Analysis");
         System.out.println(SEPARATOR);
-        System.out.printf("%-50s %-20s %-15s %-15s %-10s%n",
-                "Benchmark", "Parameters", "Ops/sec", "Messages/sec", "Multiplier");
+        System.out.printf(
+                "%-50s %-20s %-15s %-15s %-10s%n", "Benchmark", "Parameters", "Ops/sec", "Messages/sec", "Multiplier");
         System.out.println(LINE);
 
         for (BenchmarkResult result : results) {
@@ -184,14 +241,13 @@ public class JmhResultAnalyzer {
 
             String multiplier = "×" + result.multiplier;
 
-            System.out.printf("%-50s %-20s %-15s %-15s %-10s%n",
-                    name, params, ops, msgs, multiplier);
+            System.out.printf("%-50s %-20s %-15s %-15s %-10s%n", name, params, ops, msgs, multiplier);
         }
 
         System.out.println(SEPARATOR);
         System.out.println();
         System.out.println("Note: Ops/sec × Multiplier = Messages/sec");
-        System.out.println("      Multiplier is determined by messagesPerBatch or messagesPerPoll parameter");
+        System.out.println("      Multiplier = messagesPerBatch/Poll × concurrentRequests (if applicable)");
         System.out.println();
     }
 
@@ -204,8 +260,14 @@ public class JmhResultAnalyzer {
         final double messagesError;
         final int multiplier;
 
-        BenchmarkResult(String name, String params, double opsPerSec, double opsError,
-                        double messagesPerSec, double messagesError, int multiplier) {
+        BenchmarkResult(
+                String name,
+                String params,
+                double opsPerSec,
+                double opsError,
+                double messagesPerSec,
+                double messagesError,
+                int multiplier) {
             this.name = name;
             this.params = params;
             this.opsPerSec = opsPerSec;
