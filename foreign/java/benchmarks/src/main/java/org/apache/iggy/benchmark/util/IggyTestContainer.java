@@ -32,6 +32,7 @@ public final class IggyTestContainer {
     public static final int TCP_PORT = 8090;
 
     private static final Logger log = LoggerFactory.getLogger(IggyTestContainer.class);
+    private static final boolean USE_EXTERNAL_SERVER = System.getenv("USE_EXTERNAL_SERVER") != null;
 
     private final GenericContainer<?> container;
 
@@ -40,6 +41,11 @@ public final class IggyTestContainer {
     }
 
     public static IggyTestContainer start() {
+        if (USE_EXTERNAL_SERVER) {
+            log.info("Using external Iggy Server");
+            return new IggyTestContainer(null);
+        }
+
         log.info("Starting Iggy Server Container...");
 
         GenericContainer<?> container = new GenericContainer<>(DockerImageName.parse("apache/iggy:edge"))
@@ -71,10 +77,18 @@ public final class IggyTestContainer {
     }
 
     public int getHttpPort() {
+        if (container == null) {
+            // Using external server with default port
+            return HTTP_PORT;
+        }
         return container.getMappedPort(HTTP_PORT);
     }
 
     public int getTcpPort() {
+        if (container == null) {
+            // Using external server with default port
+            return TCP_PORT;
+        }
         return container.getMappedPort(TCP_PORT);
     }
 
@@ -92,6 +106,10 @@ public final class IggyTestContainer {
     }
 
     public boolean isRunning() {
+        if (USE_EXTERNAL_SERVER) {
+            // External server is assumed to be always running
+            return true;
+        }
         return container != null && container.isRunning();
     }
 }
