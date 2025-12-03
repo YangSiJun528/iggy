@@ -48,10 +48,10 @@ import java.util.concurrent.TimeUnit;
 
 @State(Scope.Benchmark)
 @Fork(value = 1)
-@Warmup(iterations = 3)
-@Measurement(iterations = 5)
-@BenchmarkMode(Mode.AverageTime)
-@OutputTimeUnit(TimeUnit.MILLISECONDS)
+@Warmup(iterations = 5)
+@Measurement(iterations = 10)
+@BenchmarkMode(Mode.Throughput)
+@OutputTimeUnit(TimeUnit.SECONDS)
 public abstract class BasePollBenchmark {
 
     protected static final int MESSAGE_PAYLOAD_BYTES = 1000;
