@@ -25,18 +25,11 @@ import org.apache.iggy.client.blocking.IggyBaseClient;
 import org.apache.iggy.message.PolledMessages;
 import org.apache.iggy.message.PollingStrategy;
 import org.openjdk.jmh.annotations.Benchmark;
-import org.openjdk.jmh.annotations.Param;
 
 import java.math.BigInteger;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 
 public class AsyncTcpPollBenchmark extends BasePollBenchmark {
-
-    @Param({"1", "4", "16"})
-    public int concurrentRequests;
 
     private AsyncIggyTcpClient asyncClient;
 
@@ -60,56 +53,26 @@ public class AsyncTcpPollBenchmark extends BasePollBenchmark {
     }
 
     @Benchmark
-    public List<PolledMessages> pollNext() {
-        List<CompletableFuture<PolledMessages>> futures = new ArrayList<>(concurrentRequests);
-
-        for (int i = 0; i < concurrentRequests; i++) {
-            futures.add(asyncClient
-                    .messages()
-                    .pollMessagesAsync(
-                            streamId,
-                            topicId,
-                            Optional.of(0L),
-                            consumer,
-                            PollingStrategy.next(),
-                            messagesPerPoll,
-                            false));
-        }
-
-        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
-
-        List<PolledMessages> results = new ArrayList<>(concurrentRequests);
-        for (CompletableFuture<PolledMessages> future : futures) {
-            results.add(future.join());
-        }
-
-        return results;
+    public PolledMessages pollNext() throws Exception {
+        return asyncClient
+                .messages()
+                .pollMessagesAsync(
+                        streamId, topicId, Optional.of(0L), consumer, PollingStrategy.next(), messagesPerPoll, false)
+                .get();
     }
 
     @Benchmark
-    public List<PolledMessages> pollOffset() {
-        List<CompletableFuture<PolledMessages>> futures = new ArrayList<>(concurrentRequests);
-
-        for (int i = 0; i < concurrentRequests; i++) {
-            futures.add(asyncClient
-                    .messages()
-                    .pollMessagesAsync(
-                            streamId,
-                            topicId,
-                            Optional.of(0L),
-                            consumer,
-                            PollingStrategy.offset(BigInteger.ZERO),
-                            messagesPerPoll,
-                            false));
-        }
-
-        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
-
-        List<PolledMessages> results = new ArrayList<>(concurrentRequests);
-        for (CompletableFuture<PolledMessages> future : futures) {
-            results.add(future.join());
-        }
-
-        return results;
+    public PolledMessages pollOffset() throws Exception {
+        return asyncClient
+                .messages()
+                .pollMessagesAsync(
+                        streamId,
+                        topicId,
+                        Optional.of(0L),
+                        consumer,
+                        PollingStrategy.offset(BigInteger.ZERO),
+                        messagesPerPoll,
+                        false)
+                .get();
     }
 }
