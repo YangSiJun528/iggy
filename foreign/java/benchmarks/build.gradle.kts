@@ -27,6 +27,7 @@ dependencies {
     implementation(libs.jmh.core)
     implementation(libs.slf4j.api)
     implementation(libs.testcontainers)
+    implementation("com.google.code.gson:gson:2.10.1")
     annotationProcessor(libs.jmh.generator)
     runtimeOnly(libs.logback.classic)
     runtimeOnly(libs.netty.dns.macos) { artifact { classifier = "osx-aarch_64" } }
@@ -52,10 +53,43 @@ tasks.register<JavaExec>("jmh") {
     val jmhArgs = project.findProperty("jmhArgs")?.toString() ?: ""
     val jarFile = tasks.shadowJar.get().archiveFile.get().asFile
 
+    // Ensure build/reports/jmh directory exists
+    doFirst {
+        file("build/reports/jmh").mkdirs()
+    }
+
     classpath = files(jarFile)
     mainClass.set("org.openjdk.jmh.Main")
     args = jmhArgs.split(" ").filter { it.isNotBlank() }
 
     // Disable Gradle caching to ensure benchmarks always run
     outputs.upToDateWhen { false }
+}
+
+tasks.register<JavaExec>("jmhReport") {
+    group = "benchmark"
+    description = "Analyze JMH benchmark results and generate report. Use -PjmhResultFile to specify JSON file path."
+
+    dependsOn(tasks.shadowJar)
+
+    val resultFilePath = project.findProperty("jmhResultFile")?.toString()
+        ?: "build/reports/jmh/results.json"
+    val resultsFile = file(resultFilePath)
+
+    // Only run if results file exists
+    onlyIf {
+        if (!resultsFile.exists()) {
+            logger.warn("JMH results file not found: ${resultsFile.absolutePath}")
+            logger.warn("Run benchmarks with: ./gradlew :iggy-benchmarks:jmh -PjmhArgs='-rf json -rff ${resultFilePath}'")
+            false
+        } else {
+            true
+        }
+    }
+
+    val jarFile = tasks.shadowJar.get().archiveFile.get().asFile
+
+    classpath = files(jarFile)
+    mainClass.set("org.apache.iggy.benchmark.util.JmhResultAnalyzer")
+    args = listOf(resultsFile.absolutePath)
 }
