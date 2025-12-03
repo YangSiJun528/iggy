@@ -31,7 +31,7 @@ Server-side performance testing is done separately by the Iggy server project.
   - Parameters: `messagesPerPoll` (1, 10, 100, 1000)
 - **Async poll with concurrent requests**: `AsyncTcpPollBenchmark`
   - Methods: `pollNext`, `pollOffset`
-  - Parameters: `messagesPerPoll` (1, 10, 100, 1000), `concurrentRequests` (1, 16)
+  - Parameters: `messagesPerPoll` (1, 10, 100, 1000), `concurrentRequests` (1, 4, 16)
   - When `concurrentRequests=1`, behaves as single request; when >1, executes multiple concurrent requests
 
 ## Usage

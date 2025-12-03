@@ -35,7 +35,7 @@ import java.util.concurrent.CompletableFuture;
 
 public class AsyncTcpPollBenchmark extends BasePollBenchmark {
 
-    @Param({"1", "16"})
+    @Param({"1", "4", "16"})
     public int concurrentRequests;
 
     private AsyncIggyTcpClient asyncClient;
