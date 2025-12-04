@@ -26,7 +26,7 @@ dependencies {
     implementation(project(":iggy"))
     implementation(libs.jmh.core)
     implementation(libs.slf4j.api)
-    implementation(libs.testcontainers)
+    implementation(libs.reactor.netty.core)  // For ByteBuf access
     annotationProcessor(libs.jmh.generator)
     runtimeOnly(libs.logback.classic)
     runtimeOnly(libs.netty.dns.macos) { artifact { classifier = "osx-aarch_64" } }

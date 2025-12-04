@@ -6,57 +6,54 @@ JMH-based performance benchmarks for Iggy Java SDK.
 
 ### Microbenchmarks
 Pure client-side performance, no external dependencies:
-- **MessageSerializationBenchmark** - Message encode/decode, BigInteger U64/U128 conversion ⭐
-
-### Integration Benchmarks (`poll.*`, `send.*`)
-End-to-end throughput with Iggy server:
-- **Poll benchmarks** - Message polling performance
-- **Send benchmarks** - Message sending performance
-- Requires Docker (Testcontainers) or external server
-
-## Quick Results
-
-**Key findings from microbenchmarks:**
-
-```
-Message Serialization (results pending):
-  Run './gradlew :iggy-benchmarks:jmh -PjmhArgs="MessageSerialization"' to benchmark
-```
-
-**Focus**: Measures the real performance bottleneck - message encode/decode with ArrayUtils.reverse() overhead.
+- **BytesSerializerBenchmarkDemo** - BigInteger U64/U128 conversion performance
 
 ## Prerequisites
 
 - JDK 17+
-- Docker (for integration benchmarks only)
 
 ## Usage
+
+### Using Gradle
 
 ```bash
 # From repository root
 cd foreign/java
 
-# Run all benchmarks
+# Build benchmarks
+./gradlew :iggy-benchmarks:build
+
+# Run all benchmarks (via Gradle)
 ./gradlew :iggy-benchmarks:jmh
 
-# Run microbenchmark (no Docker needed)
-./gradlew :iggy-benchmarks:jmh -PjmhArgs="MessageSerialization"
+# Run specific benchmark
+./gradlew :iggy-benchmarks:jmh -PjmhArgs="BytesSerializer"
 
 # Quick test (fast iterations)
-./gradlew :iggy-benchmarks:jmh -PjmhArgs="MessageSerialization -f 1 -wi 3 -i 5"
+./gradlew :iggy-benchmarks:jmh -PjmhArgs="BytesSerializer -f 1 -wi 3 -i 5"
 
-# With GC profiling (recommended to measure ByteBuf allocation overhead)
-./gradlew :iggy-benchmarks:jmh -PjmhArgs="MessageSerialization -prof gc"
-
-# Use external server (no Docker)
-USE_EXTERNAL_SERVER=1 ./gradlew :iggy-benchmarks:jmh -PjmhArgs="poll"
+# With GC profiling
+./gradlew :iggy-benchmarks:jmh -PjmhArgs="BytesSerializer -prof gc"
 ```
 
-## Troubleshooting
+### Direct JAR Execution
 
-**Container fails to start:** Make sure Docker is running.
+```bash
+# Build first
+./gradlew :iggy-benchmarks:build
 
-**Verbose logging:** Edit `src/main/resources/logback.xml`:
-```xml
-<logger name="org.apache.iggy.benchmark" level="DEBUG"/>
+# Run all benchmarks
+java -jar benchmarks/build/libs/iggy-jmh-benchmarks-*-SNAPSHOT.jar
+
+# Run specific benchmark
+java -jar benchmarks/build/libs/iggy-jmh-benchmarks-*-SNAPSHOT.jar BytesSerializer
+
+# Quick test
+java -jar benchmarks/build/libs/iggy-jmh-benchmarks-*-SNAPSHOT.jar BytesSerializer -f 1 -wi 3 -i 5
+
+# List all benchmarks
+java -jar benchmarks/build/libs/iggy-jmh-benchmarks-*-SNAPSHOT.jar -l
+
+# Full JMH help
+java -jar benchmarks/build/libs/iggy-jmh-benchmarks-*-SNAPSHOT.jar -h
 ```
